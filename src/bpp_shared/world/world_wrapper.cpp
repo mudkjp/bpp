@@ -37,10 +37,7 @@ void WorldWrapper::FreeChunkRegion() {
 				c->inUse.store(false);
 }
 
-// Convert a world-space position to a region-local chunk offset (-1..1, -1..1)
-Int2 WorldWrapper::GetRegionChunkPos(const Int3 _wPos) const {
-	return { (_wPos.x >> 4) - centerChunkPos.x, (_wPos.z >> 4) - centerChunkPos.z };
-}
+// Convert a world-space position to a region-local chunk offset (-1..1, -1..1): see the header
 
 int WorldWrapper::FindTopSolidBlock(const int _wx, const int _wz) {
 	auto chunk = chunkRegion.GetChunk(GetRegionChunkPos({ _wx, 0, _wz }));
@@ -81,28 +78,26 @@ double WorldWrapper::GetHumidityAt(const int _wx, const int _wz) {
 	return double(chunk->GetHumidity({ _wx & 15, _wz & 15 }));
 }
 
-BlockType WorldWrapper::GetBlockId(const Int3 _wpos) {
-	if (!InBounds(_wpos.y))
-		return BlockType::BLOCK_AIR;
-	auto chunk = chunkRegion.GetChunk(GetRegionChunkPos(_wpos));
-	// Falls outside our grabbed region -> ask the manager directly (read-only, safe)
-	if (!chunk)
-		return manager.GetBlockId(_wpos);
-	if (chunk->state.load() < ChunkState::Generated)
-		return BlockType::BLOCK_AIR;
-	return chunk->GetBlock({ _wpos.x & 15, _wpos.y, _wpos.z & 15 });
-}
+// GetBlockId is inlined in the header: see world_wrapper.h
 
-void WorldWrapper::SetBlock(const Int3 _wpos, const BlockType _type, const uint8_t _meta,
-                            const bool /*_keepTileEntity*/, const bool /*_updateNeighbors*/) {
+void WorldWrapper::SetBlock(const Int3 _wpos, const BlockType _type, const uint8_t _meta, const bool /*_keepTileEntity*/,
+                            const bool /*_updateNeighbors*/) {
 	if (!InBounds(_wpos.y))
 		return;
-	auto chunk = chunkRegion.GetChunk(GetRegionChunkPos(_wpos));
-	if (!chunk || chunk->state.load() < ChunkState::Generated) {
+	Chunk* chunk = chunkRegion.GetChunk(GetRegionChunkPos(_wpos));
+	if (!chunk || chunk->state.load(std::memory_order_acquire) < ChunkState::Generated) {
 		// Outside our locked region
 		manager.SetBlock(_wpos, _type, _meta);
 		return;
 	}
+
+	const Int3 local{ _wpos.x & 15, _wpos.y, _wpos.z & 15 };
+	ApplyBlockChange(*chunk, local, _wpos, _type, _meta, chunk->GetBlock(local));
+}
+
+void WorldWrapper::ApplyBlockChange(Chunk& _chunk, Int3 _local, Int3 _wpos, BlockType _type, uint8_t _meta,
+                                    BlockType _oldBlock) {
+	Chunk* chunk = &_chunk;
 
 	// Remove any tile entities that exist at this spot
 	auto& tes = chunk->tileEntities;
@@ -113,17 +108,14 @@ void WorldWrapper::SetBlock(const Int3 _wpos, const BlockType _type, const uint8
 	}
 
 	// Get the local coordinates of this block within the chunk and set it
-	const Int2 localXz{ _wpos.x & 15, _wpos.z & 15 };
-	const Int3 local{ localXz.x, _wpos.y, localXz.z };
-	const auto oldBlock = chunk->GetBlock(local);
-	//auto oldMeta = chunk->GetMeta(local);
+	const Int2 localXz{ _local.x, _local.z };
 
 	// Making the assumption here that certain metadatas of
 	// blocks don't have differing light properties
 	const bool changesLighting = (Blocks::blockProperties[_type].lightOpacity !=
-	                              Blocks::blockProperties[oldBlock].lightOpacity) ||
+	                              Blocks::blockProperties[_oldBlock].lightOpacity) ||
 	                             (Blocks::blockProperties[_type].lightEmission !=
-	                              Blocks::blockProperties[oldBlock].lightEmission);
+	                              Blocks::blockProperties[_oldBlock].lightEmission);
 
 	// Unlight before changing the block
 	if (changesLighting) {
@@ -132,14 +124,13 @@ void WorldWrapper::SetBlock(const Int3 _wpos, const BlockType _type, const uint8
 	}
 
 	// Then finally set the new block
-	chunk->SetBlockRaw(local, _type);
-	chunk->SetMetaRaw(local, _meta);
+	chunk->SetBlockRaw(_local, _type);
+	chunk->SetMetaRaw(_local, _meta);
 	chunk->isModified = true;
-
-	const int oldHeight = chunk->GetHeightValue(localXz);
 
 	// Placing opaque block; heightmap may rise
 	if (changesLighting) {
+		const int oldHeight = chunk->GetHeightValue(localXz);
 		chunk->RelightColumn(localXz);
 		const int newHeight = chunk->GetHeightValue(localXz);
 		if (newHeight > oldHeight) {
@@ -159,7 +150,7 @@ void WorldWrapper::SetBlock(const Int3 _wpos, const BlockType _type, const uint8
 		manager.lightManager.ScheduleLightUpdate(_wpos, LightType::Block);
 		int extendedBottom = CrossPlatform::Math::Min(newHeight, oldHeight);
 		while (extendedBottom > 0 &&
-		       Blocks::blockProperties[chunk->GetBlock({ local.x, extendedBottom - 1, local.z })].lightOpacity == 0)
+		       Blocks::blockProperties[chunk->GetBlock({ _local.x, extendedBottom - 1, _local.z })].lightOpacity == 0)
 			--extendedBottom;
 
 		if (newHeight != oldHeight) {
@@ -180,7 +171,7 @@ void WorldWrapper::SetBlock(const Int3 _wpos, const BlockType _type, const uint8
 	if (manager.onBlockUpdate)
 		manager.onBlockUpdate(PendingBlock{ .block{ _type, _meta },
 		                                    .blockPos = _wpos,
-		                                    .light{ chunk->GetBlockLight(local), chunk->GetSkyLight(local) } },
+		                                    .light{ chunk->GetBlockLight(_local), chunk->GetSkyLight(_local) } },
 		                      chunk->cpos);
 }
 

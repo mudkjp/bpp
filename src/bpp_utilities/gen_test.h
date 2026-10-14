@@ -15,11 +15,15 @@
 #include <chrono>
 #include <climits>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <format>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -47,6 +51,12 @@ inline constexpr int GEN_TEST_RUNS_PER_SEED = 3;
 inline constexpr int GEN_TEST_WARMUP_RUNS = 1;
 // Give up on a world if it makes no progress for this long, so a stuck pipeline can't hang startup forever.
 inline constexpr double GEN_TEST_STALL_TIMEOUT_SECONDS = 60.0;
+
+// Generation workers to benchmark with. The world keeps its normal (server) pool size; the test only
+// borrows more threads for its own run and puts the pool back afterwards. Half the hardware threads,
+// clamped to [2, 8]: past 8 the remaining generation is serialized behind population and lighting
+// anyway, so more workers mostly add scheduling noise.
+inline const int GEN_TEST_THREADS = std::clamp(int(std::thread::hardware_concurrency()) / 2, 2, 8);
 
 inline const std::array<std::string, 8> GEN_TEST_SEEDS = {
 	"404", 
@@ -89,6 +99,151 @@ struct GenSpeedResult {
 	bool completed = false; // false if the test bailed out early (setup failure or stalled pipeline)
 };
 
+// A finished world, plus a fingerprint of everything it generated
+struct FinishedWorld {
+	double seconds = 0.0;
+	uint64_t hash = 0;
+};
+
+// Wall time of each pipeline phase of one world. Temporary diagnostics, not part of the score.
+struct PhaseTimes {
+	double gen = 0.0;      // PumpPipeline + pool.wait: generation on the pool
+	double queue = 0.0;    // DrainGenQueue / DrainLoadQueue / iopool.wait
+	double populate = 0.0; // PopulateReady
+	double light = 0.0;    // ProcessLightQueue
+	double scan = 0.0;     // completion check
+};
+
+// Fingerprint of one chunk: blocks, meta, both light layers and climate. Only getters are used, so it
+// describes the blocks/light the game would read back, not the storage layout.
+inline uint64_t HashChunk(const Chunk& _chunk) {
+	uint64_t h = 1469598103934665603ULL; // FNV-1a offset basis
+	auto mix32 = [&h](uint32_t _v) {
+		h ^= _v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+	};
+	auto mixBytes = [&](const void* _data, size_t _size) {
+		const auto* bytes = static_cast<const uint8_t*>(_data);
+		for (size_t i = 0; i < _size; i++)
+			mix32(bytes[i]);
+	};
+
+	mix32(uint32_t(_chunk.cpos.x));
+	mix32(uint32_t(_chunk.cpos.z));
+	mix32(_chunk.isTerrainPopulated ? 1u : 0u);
+	mixBytes(_chunk.heightMap, sizeof(_chunk.heightMap));
+	mixBytes(_chunk.temperature, sizeof(_chunk.temperature));
+	mixBytes(_chunk.humidity, sizeof(_chunk.humidity));
+	for (uint8_t byte : _chunk.biomes.data)
+		mix32(byte);
+	// Blocks, meta and both light layers, exactly as the getters would read them back
+	for (const SubChunk& sub : _chunk.subChunks) {
+		for (int i = 0; i < SubChunk::VOLUME; i++) {
+			uint32_t voxel = uint32_t(uint8_t(sub.GetBlock(i))) | (uint32_t(sub.GetMeta(i)) << 8) |
+			                 (uint32_t(sub.GetBlockLight(i)) << 12) | (uint32_t(sub.GetSkyLight(i)) << 16);
+			mix32(voxel);
+		}
+	}
+
+	return h;
+}
+
+// Folds every chunk of a finished world into one hash, so two builds can be diffed for exact output
+// equality. Chunk order doesn't matter (positions are sorted first). Computed after the timer stops.
+inline uint64_t HashFinishedWorld(WorldManager& _world) {
+	std::vector<Int32_2> positions;
+	positions.reserve(_world.chunks.size());
+	for (const auto& [pos, chunk] : _world.chunks)
+		positions.push_back(pos);
+	std::sort(positions.begin(), positions.end(), [](const Int32_2& _a, const Int32_2& _b) {
+		if (_a.x != _b.x)
+			return _a.x < _b.x;
+		return _a.z < _b.z;
+	});
+
+	uint64_t h = 1469598103934665603ULL; // FNV-1a offset basis
+	auto mix64 = [&h](uint64_t _v) {
+		h ^= _v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+	};
+
+	mix64(positions.size());
+	for (const Int32_2& pos : positions)
+		mix64(HashChunk(*_world.chunks.at(pos)));
+
+	return h;
+}
+
+// Writes a "cx cz hash" line per chunk, so differing chunks between two runs can be located.
+// With BPP_CHUNK_HASH_DUMP_PARTS set, each line also carries per-component hashes (blocks, meta,
+// block light, sky light, height, climate, biome) so a mismatch can be narrowed down.
+inline void DumpChunkHashes(WorldManager& _world, const std::string& _path) {
+	std::vector<Int32_2> positions;
+	positions.reserve(_world.chunks.size());
+	for (const auto& [pos, chunk] : _world.chunks)
+		positions.push_back(pos);
+	std::sort(positions.begin(), positions.end(), [](const Int32_2& _a, const Int32_2& _b) {
+		if (_a.x != _b.x)
+			return _a.x < _b.x;
+		return _a.z < _b.z;
+	});
+
+	const bool parts = std::getenv("BPP_CHUNK_HASH_DUMP_PARTS") != nullptr;
+	// Optional "cx,cz": also write the full voxel list of that chunk next to the hash file
+	const char* dumpPosEnv = std::getenv("BPP_CHUNK_DUMP_POS");
+	Int32_2 dumpPos{ 0, 0 };
+	bool dumpPosSet = false;
+	if (dumpPosEnv) {
+		Int32_2 parsed{ 0, 0 };
+		if (std::sscanf(dumpPosEnv, "%d,%d", &parsed.x, &parsed.z) == 2) {
+			dumpPos = parsed;
+			dumpPosSet = true;
+		}
+	}
+
+	std::ofstream out(_path);
+	std::ofstream voxels;
+	if (dumpPosSet)
+		voxels.open(_path + ".voxels.txt");
+	for (const Int32_2& pos : positions) {
+		const Chunk& chunk = *_world.chunks.at(pos);
+		out << std::format("{} {} 0x{:016x}", pos.x, pos.z, HashChunk(chunk));
+		if (parts) {
+			uint64_t blocks = 1469598103934665603ULL, meta = blocks, blockLight = blocks, skyLight = blocks;
+			auto mix = [](uint64_t& _h, uint64_t _v) {
+				_h ^= _v + 0x9e3779b97f4a7c15ULL + (_h << 6) + (_h >> 2);
+			};
+			for (const SubChunk& sub : chunk.subChunks)
+				for (int i = 0; i < SubChunk::VOLUME; i++) {
+					mix(blocks, uint8_t(sub.GetBlock(i)));
+					mix(meta, sub.GetMeta(i));
+					mix(blockLight, sub.GetBlockLight(i));
+					mix(skyLight, sub.GetSkyLight(i));
+				}
+			uint64_t height = 1469598103934665603ULL, climate = height, biome = height;
+			for (uint8_t v : chunk.heightMap)
+				mix(height, v);
+			for (size_t i = 0; i < CHUNK_AREA; i++) {
+				uint32_t temp = 0, humi = 0;
+				std::memcpy(&temp, &chunk.temperature[i], sizeof(temp));
+				std::memcpy(&humi, &chunk.humidity[i], sizeof(humi));
+				mix(climate, temp);
+				mix(climate, humi);
+				mix(biome, chunk.biomes.Get(i));
+			}
+			out << std::format(" blocks=0x{:016x} meta=0x{:016x} blocklight=0x{:016x} skylight=0x{:016x} height=0x{:016x} climate=0x{:016x} biome=0x{:016x} popped={}", blocks, meta, blockLight, skyLight, height, climate, biome, chunk.isTerrainPopulated ? 1 : 0);
+		}
+		if (dumpPosSet && pos == dumpPos) {
+			for (int y = 0; y < CHUNK_HEIGHT; y++)
+				for (int x = 0; x < CHUNK_WIDTH; x++)
+					for (int z = 0; z < CHUNK_WIDTH; z++) {
+						Int3 p{ x, y, z };
+						voxels << std::format("{} {} {} {} {} {} {}\n", x, y, z, int(chunk.GetBlock(p)),
+						                      chunk.GetMeta(p), chunk.GetBlockLight(p), chunk.GetSkyLight(p));
+					}
+		}
+		out << "\n";
+	}
+}
+
 namespace Detail {
 
 // Stashes the parts of the world the test is about to clobber, swaps in an empty region manager, and puts
@@ -122,9 +277,9 @@ private:
 	std::unordered_map<Int32_2, std::shared_ptr<Chunk>> savedChunks;
 };
 
-// Generates one finished world at `_radius` and returns how long it took in seconds, or nullopt if the pipeline
-// stalled. The world's chunk map is left populated; the caller clears it.
-inline std::optional<double> GenerateFinishedWorld(WorldManager& _world, int _radius) {
+// Generates one finished world at `_radius` and returns how long it took plus a hash of the result, or nullopt
+// if the pipeline stalled. The world's chunk map is left populated; the caller clears it.
+inline std::optional<FinishedWorld> GenerateFinishedWorld(WorldManager& _world, int _radius, PhaseTimes* _phases = nullptr) {
 	using Clock = std::chrono::steady_clock;
 
 	const int diameter = _radius * 2 + 1;
@@ -146,15 +301,22 @@ inline std::optional<double> GenerateFinishedWorld(WorldManager& _world, int _ra
 	auto lastProgress = start;
 	int lastProgressCount = -1;
 
-	// Same pump the server uses for spawn chunks, minus the logging.
+	// Same pump the server uses for spawn chunks, minus the logging. Waiting for the whole batch keeps
+	// population decisions identical to the server's spawn path; draining as tasks finish is faster but
+	// changes which light updates have been applied when a chunk decides where to place plants.
 	while (true) {
+		auto t0 = Clock::now();
 		_world.PumpPipeline({});
 		_world.pool.wait();
+		auto t1 = Clock::now();
 		_world.DrainGenQueue();
 		_world.regionManager->iopool.wait();
 		_world.DrainLoadQueue();
+		auto t2 = Clock::now();
 		_world.PopulateReady(INT_MAX);
+		auto t3 = Clock::now();
 		_world.lightManager.ProcessLightQueue(_world);
+		auto t4 = Clock::now();
 
 		int generated = 0;
 		int populated = 0;
@@ -163,6 +325,15 @@ inline std::optional<double> GenerateFinishedWorld(WorldManager& _world, int _ra
 				generated++;
 			if (chunk->isTerrainPopulated)
 				populated++;
+		}
+		auto t5 = Clock::now();
+
+		if (_phases) {
+			_phases->gen += std::chrono::duration<double>(t1 - t0).count();
+			_phases->queue += std::chrono::duration<double>(t2 - t1).count();
+			_phases->populate += std::chrono::duration<double>(t3 - t2).count();
+			_phases->light += std::chrono::duration<double>(t4 - t3).count();
+			_phases->scan += std::chrono::duration<double>(t5 - t4).count();
 		}
 
 		if (generated >= totalChunks && populated >= populatableChunks)
@@ -179,7 +350,11 @@ inline std::optional<double> GenerateFinishedWorld(WorldManager& _world, int _ra
 		}
 	}
 
-	return std::chrono::duration<double>(Clock::now() - start).count();
+	FinishedWorld finished;
+	finished.seconds = std::chrono::duration<double>(Clock::now() - start).count();
+	// Hashing happens after the clock stops, so it can't skew the measurement
+	finished.hash = HashFinishedWorld(_world);
+	return finished;
 }
 
 // Throw away every chunk so the next run starts from nothing.
@@ -216,8 +391,12 @@ inline GenSpeedResult PerformChunkGenSpeedTest(WorldManager& _world) {
 	const int chunksPerWorld = (radius * 2 + 1) * (radius * 2 + 1);
 	result.overall.chunksPerWorld = chunksPerWorld;
 
-	log.info << std::format("Chunk gen test: {} seeds x {} worlds at render distance {} ({} chunks each)\n",
-	                        GEN_TEST_SEEDS.size(), GEN_TEST_RUNS_PER_SEED, radius, chunksPerWorld);
+	log.info << std::format("Chunk gen test: {} seeds x {} worlds at render distance {} ({} chunks each), {} generator threads\n",
+	                        GEN_TEST_SEEDS.size(), GEN_TEST_RUNS_PER_SEED, radius, chunksPerWorld, GEN_TEST_THREADS);
+
+	// Benchmark with a dedicated worker count, then put the pool back the way the server had it.
+	const std::size_t savedThreads = _world.pool.get_thread_count();
+	_world.pool.reset(std::size_t(GEN_TEST_THREADS));
 
 	bool ok = true;
 
@@ -235,17 +414,28 @@ inline GenSpeedResult PerformChunkGenSpeedTest(WorldManager& _world) {
 		GenSpeedStats seedStats;
 		seedStats.chunksPerWorld = chunksPerWorld;
 		_world.InitWorldSeed(HashCode(seed));
+		std::optional<uint64_t> seedHash;
 
 		for (int run = 1; run <= GEN_TEST_RUNS_PER_SEED; run++) {
-			auto seconds = Detail::GenerateFinishedWorld(_world, radius);
+			PhaseTimes phases;
+			auto finished = Detail::GenerateFinishedWorld(_world, radius, &phases);
+			if (finished)
+				if (const char* dumpDir = std::getenv("BPP_CHUNK_HASH_DUMP"))
+					DumpChunkHashes(_world, std::format("{}/seed-{}-run-{}.txt", dumpDir, seed, run));
 			Detail::DeleteAllChunks(_world);
-			if (!seconds) {
+			if (!finished) {
 				ok = false;
 				break;
 			}
-			seedStats.Add(*seconds);
-			result.overall.Add(*seconds);
-			log.info << std::format("  seed \"{}\" run {}/{}: {:.3f}s\n", seed, run, GEN_TEST_RUNS_PER_SEED, *seconds);
+			seedStats.Add(finished->seconds);
+			result.overall.Add(finished->seconds);
+			log.info << std::format("  seed \"{}\" run {}/{}: {:.3f}s hash 0x{:016x}\n", seed, run,
+			                        GEN_TEST_RUNS_PER_SEED, finished->seconds, finished->hash);
+			log.info << std::format("    phases: gen {:.3f}s | queue {:.3f}s | populate {:.3f}s | light {:.3f}s | scan {:.3f}s\n",
+			                        phases.gen, phases.queue, phases.populate, phases.light, phases.scan);
+			if (seedHash && *seedHash != finished->hash)
+				log.warn << std::format("  seed \"{}\" produced different output across runs!\n", seed);
+			seedHash = finished->hash;
 		}
 
 		if (seedStats.worlds > 0) {
@@ -257,6 +447,10 @@ inline GenSpeedResult PerformChunkGenSpeedTest(WorldManager& _world) {
 	result.completed = ok;
 	if (result.overall.worlds > 0)
 		Detail::LogStats(ok ? "Chunk gen test overall:" : "Chunk gen test (INCOMPLETE) so far:", result.overall);
+
+	// Give the server its own pool size back
+	_world.pool.wait();
+	_world.pool.reset(savedThreads);
 	return result;
 }
 

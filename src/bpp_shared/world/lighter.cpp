@@ -53,6 +53,16 @@ void Lighter::PropagateLightAt(int _x, int _y, int _z, LightType _type, WorldMan
 		return;
 
 	int lx = _x & 15, lz = _z & 15;
+	// Cells above the height map always read as full sky light, so a cell that already is full
+	// cannot change: skip everything else for it. The reads are reused by the update below.
+	bool skySeesSky = false;
+	int skyOldLight = 0;
+	if (_type == LightType::Sky) {
+		skyOldLight = chunk->GetSkyLight({ lx, _y, lz });
+		skySeesSky = chunk->CanBlockSeeSky({ lx, _y, lz });
+		if (skyOldLight == 15 && skySeesSky)
+			return;
+	}
 	BlockType blockId = chunk->GetBlock({ lx, _y, lz });
 	int opacity = Blocks::blockProperties[blockId].lightOpacity;
 	if (opacity == 0)
@@ -97,12 +107,12 @@ void Lighter::PropagateLightAt(int _x, int _y, int _z, LightType _type, WorldMan
 	int newVal = 0;
 
 	if (_type == LightType::Sky) {
-		if (chunk->CanBlockSeeSky({ lx, _y, lz })) {
+		if (skySeesSky) {
 			newVal = 15;
 		} else if (opacity < 15) {
 			newVal = CrossPlatform::Math::Max(0, scanBest() - opacity);
 		}
-		int oldVal = chunk->GetSkyLight({ lx, _y, lz });
+		int oldVal = skyOldLight;
 		if (oldVal == newVal)
 			return;
 		chunk->SetSkyLight({ lx, _y, lz }, uint8_t(newVal));
@@ -160,16 +170,21 @@ void Lighter::UnlightAt(int _x, int _y, int _z, LightType _type, WorldManager& _
 	if (_y < 0 || _y >= CHUNK_HEIGHT)
 		return;
 
-	ChunkCache unlightCache;
+	// Check for light on the center chunk before building the 3x3 cache: most unlights (block
+	// light from non-emitters especially) hit a cell that is already dark and return here.
+	Chunk* center = _world.GetChunkRaw({ _x >> 4, _z >> 4 });
+	if (!center)
+		return;
+	const int lx = _x & 15, lz = _z & 15;
+	const int oldVal = (_type == LightType::Sky) ? center->GetSkyLight({ lx, _y, lz })
+	                                             : center->GetBlockLight({ lx, _y, lz });
+	if (oldVal == 0)
+		return;
 
+	ChunkCache unlightCache;
 	unlightCache.Refresh(_x >> 4, _z >> 4, _world);
 	Chunk* chunk = unlightCache.grid[1][1];
 	if (!chunk)
-		return;
-
-	int lx = _x & 15, lz = _z & 15;
-	int oldVal = (_type == LightType::Sky) ? chunk->GetSkyLight({ lx, _y, lz }) : chunk->GetBlockLight({ lx, _y, lz });
-	if (oldVal == 0)
 		return;
 
 	// Block/meta and the untouched light channel aren't affected by the light
@@ -288,8 +303,8 @@ bool Lighter::ProcessLightQueue(WorldManager& _world, int _maxIterations) {
 	}
 
 	--processingDepth;
-	if (lightQueue.empty())
-		lightQueue.shrink_to_fit();
+	// The queue is refilled every generation iteration, so keeping the capacity avoids a
+	// free + realloc cycle each time it happens to empty out.
 
 	return !lightQueue.empty();
 }

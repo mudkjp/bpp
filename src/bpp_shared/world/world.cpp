@@ -627,14 +627,19 @@ void WorldManager::DrainGenQueue() {
 			it->second->spawnChunk = wasSpawnChunk;
 
 			// Replay any writes that arrived while this chunk was unloaded.
+			bool replayedBleedWrites = false;
 			auto pit = pendingBleedWrites.find(pos);
 			if (pit != pendingBleedWrites.end()) {
 				for (auto& [wpos, block] : pit->second)
 					SetBlock(wpos, block.type, block.data);
 				pendingBleedWrites.erase(pit);
+				replayedBleedWrites = true;
 			}
 
-			it->second->GenerateSkylightMap();         // Regen our skylight map
+			// The generator already built the skylight map, so it only needs rebuilding if the replayed
+			// writes changed blocks under the open sky.
+			if (replayedBleedWrites)
+				it->second->GenerateSkylightMap();
 			this->SeedChunkLighting(it->second->cpos); // Reseed our lighting
 		}
 	}
@@ -721,10 +726,17 @@ void WorldManager::SeedChunkLighting(Int32_2 _pos) {
 	// Block light emitters
 	for (int x = 0; x < CHUNK_WIDTH; ++x)
 		for (int z = 0; z < CHUNK_WIDTH; ++z)
-			for (int y = 0; y < CHUNK_HEIGHT; ++y) {
-				BlockType id = chunk->GetBlock({ x, y, z });
-				if (Blocks::blockProperties[id].lightEmission > 0)
-					lightManager.ScheduleLightUpdate({ bx + x, y, bz + z }, LightType::Block);
+			for (int sub = 0; sub < SUB_CHUNK_COUNT; ++sub) {
+				const SubChunk& slice = chunk->subChunks[size_t(sub)];
+				// A slice without a block layer is one uniform block, so if that block doesn't emit
+				// light there is nothing to schedule in it.
+				if (!slice.blocks && Blocks::blockProperties[slice.blockFill].lightEmission == 0)
+					continue;
+				for (int y = sub * SUB_CHUNK_SIZE; y < (sub + 1) * SUB_CHUNK_SIZE; ++y) {
+					BlockType id = chunk->GetBlock({ x, y, z });
+					if (Blocks::blockProperties[id].lightEmission > 0)
+						lightManager.ScheduleLightUpdate({ bx + x, y, bz + z }, LightType::Block);
+				}
 			}
 	PropagateChunkLightBorders(_pos);
 }

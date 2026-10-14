@@ -40,8 +40,8 @@ bool FeatureGenerator::GenerateClay(WorldWrapper& _world, Java::Random& _rand, I
 					double dx = (double(x) + 0.5 - xC) / (radXZ / 2.0);
 					double dy = (double(y) + 0.5 - yC) / (radY / 2.0);
 					double dz = (double(z) + 0.5 - zC) / (radXZ / 2.0);
-					if (dx * dx + dy * dy + dz * dz < 1.0 && _world.GetBlockId({ x, y, z }) == BLOCK_SAND)
-						_world.SetBlock({ x, y, z }, BLOCK_CLAY);
+					if (dx * dx + dy * dy + dz * dz < 1.0)
+						_world.SetBlockIf({ x, y, z }, BLOCK_SAND, BLOCK_CLAY);
 				}
 	}
 	return true;

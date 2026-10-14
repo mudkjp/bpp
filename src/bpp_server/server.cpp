@@ -22,6 +22,7 @@
 #include "commands/command.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <format>
 #include <future>
 #include <climits>
@@ -435,8 +436,13 @@ void Server::Startup() {
 		GlobalLogger().info << "Loading spawn.. 100%\n";
 	};
 
-	// Benchmark gen speed
-	//ChunkBenchmark::PerformChunkGenSpeedTest(gameRuntime.world);
+	// Benchmark gen speed. BPP_CHUNK_BENCH=1 runs it at startup and shuts down afterwards, so a build can be
+	// benchmarked without a client; otherwise the server starts normally.
+	if (std::getenv("BPP_CHUNK_BENCH") != nullptr) {
+		ChunkBenchmark::PerformChunkGenSpeedTest(gameRuntime.world);
+		shutdownRequested.store(true);
+		return;
+	}
 
 	GlobalLogger().info << "Loading spawn chunks for Overworld: (" << totalSpawnChunks << ")\n";
 	loadSpawnChunks(gameRuntime.world);

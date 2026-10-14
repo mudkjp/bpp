@@ -63,9 +63,8 @@ void OverworldGenerator::GenerateChunk(Chunk& _chunk) {
 	ReplaceBlocksForBiome(_chunk);
 	// Carve caves
 	caver.GenerateCavesForChunk(_chunk, seed);
-	// Generate heightmap
-	_chunk.GenerateHeightMap();
 
+	// The height map is generated as part of GenerateSkylightMap()
 	_chunk.isModified = true;
 }
 
