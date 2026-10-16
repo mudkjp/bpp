@@ -6,7 +6,6 @@
  *
  */
 #pragma once
-#include "addon/addon_impl.h"
 #include "base_types.h"
 #include "blocks/block_properties.h"
 #include "dimensions.h"
@@ -21,6 +20,10 @@
 #include "damage_types.h"
 #include <optional>
 #include <vector>
+
+#ifdef BUILD_SERVER
+#include "addon/addon_impl.h"
+#endif
 
 struct EntityFlags {
 	bool isBurning = false;
@@ -69,7 +72,9 @@ struct LightningEntity;
 // TODO: Reorder some of these. Having a bunch of bools
 // like this between bigger types is bad for alignment
 struct Entity {
+#ifdef BUILD_SERVER // Maybe this shouldn't be here
 	bp_entity apiEntity;
+#endif
 
 	// For randomness
 	Java::Random rand;
@@ -152,7 +157,8 @@ struct Entity {
 	bool jumping = false;
 
 	// Fire
-	int fireTicks = 0; // > 0: burning ticks left; <= 0: not burning (negative = grace period, see fireResistance)	bool inFire = false;         // Currently touching a fire/lava block
+	int fireTicks =
+	    0; // > 0: burning ticks left; <= 0: not burning (negative = grace period, see fireResistance)	bool inFire = false;         // Currently touching a fire/lava block
 	int fireResistance = 1;      // Ticks of immunity after catching fire
 	bool isImmuneToFire = false; // Total fire immunity
 
@@ -175,7 +181,11 @@ struct Entity {
 
 	float entityBrightness = 0.0f;
 
-	Entity() : apiEntity(this) {
+	Entity()
+#ifdef BUILD_SERVER
+	    : apiEntity(this)
+#endif
+	{
 		RebuildCollider();
 	}
 	virtual ~Entity() = default;
