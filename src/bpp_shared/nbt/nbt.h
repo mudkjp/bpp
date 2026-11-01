@@ -196,9 +196,11 @@ struct NBTParser {
 			int32_t count = ReadI32();
 			if (count < 0 || pos + size_t(count) > length) [[unlikely]]
 				throw std::runtime_error("NBT: byte array out of bounds");
-			tag.byteArray.resize(count);
-			std::memcpy(tag.byteArray.data(), data + pos, count);
-			pos += count;
+			// assign() copies straight into fresh storage, unlike resize()
+			// followed by memcpy() which zero-fills the whole array first.
+			const auto* begin = reinterpret_cast<const int8_t*>(data + pos);
+			tag.byteArray.assign(begin, begin + count);
+			pos += size_t(count);
 			break;
 		}
 
