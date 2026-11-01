@@ -315,25 +315,47 @@ std::vector<uint8_t> Region::EncodeNbtData(const std::shared_ptr<Chunk>& _chunk,
 					const int8_t blockFill = int8_t(sub.blockFill);
 					const uint8_t mf = sub.metaFill, blf = sub.blockLightFill, sf = sub.skyLightFill;
 					const int baseY = s * SUB_CHUNK_SIZE;
-					for (int ly = 0; ly < SUB_CHUNK_SIZE; ly += 2) {
-						const int y = baseY + ly;
-						const size_t idx = size_t(y + (z * CHUNK_HEIGHT) + (x * CHUNK_HEIGHT * CHUNK_WIDTH));
-						const int li = SubChunk::LocalIndex({ x, y, z });
-						const int liNext = li + SUB_CHUNK_SIZE * SUB_CHUNK_SIZE;
+					size_t idx = size_t(baseY + (z * CHUNK_HEIGHT) + (x * CHUNK_HEIGHT * CHUNK_WIDTH));
+					int li = SubChunk::LocalIndex({ x, baseY, z });
+					if (bl && ml && bll && sl) {
+						for (int ly = 0; ly < SUB_CHUNK_SIZE; ly += 2, idx += 2, li += SUB_CHUNK_SIZE * SUB_CHUNK_SIZE * 2) {
+							const int liNext = li + SUB_CHUNK_SIZE * SUB_CHUNK_SIZE;
+							blocksOut[idx] = int8_t(bl->types[size_t(li)]);
+							blocksOut[idx + 1] = int8_t(bl->types[size_t(liNext)]);
+							dataOut[idx / 2] = int8_t((ml->Get(li) & 0x0F) | ((ml->Get(liNext) & 0x0F) << 4));
+							skyLightOut[idx / 2] =
+							    int8_t((sl->Get(li) & 0x0F) | ((sl->Get(liNext) & 0x0F) << 4));
+							blockLightOut[idx / 2] =
+							    int8_t((bll->Get(li) & 0x0F) | ((bll->Get(liNext) & 0x0F) << 4));
+						}
+					} else if (!bl && !ml && !bll && !sl) {
+						const int8_t packedMeta = int8_t(mf | (mf << 4));
+						const int8_t packedBlockLight = int8_t(blf | (blf << 4));
+						const int8_t packedSkyLight = int8_t(sf | (sf << 4));
+						for (int ly = 0; ly < SUB_CHUNK_SIZE; ly += 2, idx += 2) {
+							blocksOut[idx] = blockFill;
+							blocksOut[idx + 1] = blockFill;
+							dataOut[idx / 2] = packedMeta;
+							skyLightOut[idx / 2] = packedSkyLight;
+							blockLightOut[idx / 2] = packedBlockLight;
+						}
+					} else {
+						for (int ly = 0; ly < SUB_CHUNK_SIZE; ly += 2, idx += 2, li += SUB_CHUNK_SIZE * SUB_CHUNK_SIZE * 2) {
+							const int liNext = li + SUB_CHUNK_SIZE * SUB_CHUNK_SIZE;
+							blocksOut[idx] = bl ? int8_t(bl->types[size_t(li)]) : blockFill;
+							blocksOut[idx + 1] = bl ? int8_t(bl->types[size_t(liNext)]) : blockFill;
 
-						blocksOut[idx] = bl ? int8_t(bl->types[size_t(li)]) : blockFill;
-						blocksOut[idx + 1] = bl ? int8_t(bl->types[size_t(liNext)]) : blockFill;
+							const uint8_t meta0 = ml ? ml->Get(li) : mf;
+							const uint8_t meta1 = ml ? ml->Get(liNext) : mf;
+							const uint8_t sky0 = sl ? sl->Get(li) : sf;
+							const uint8_t sky1 = sl ? sl->Get(liNext) : sf;
+							const uint8_t light0 = bll ? bll->Get(li) : blf;
+							const uint8_t light1 = bll ? bll->Get(liNext) : blf;
 
-						const uint8_t meta0 = ml ? ml->Get(li) : mf;
-						const uint8_t meta1 = ml ? ml->Get(liNext) : mf;
-						const uint8_t sky0 = sl ? sl->Get(li) : sf;
-						const uint8_t sky1 = sl ? sl->Get(liNext) : sf;
-						const uint8_t light0 = bll ? bll->Get(li) : blf;
-						const uint8_t light1 = bll ? bll->Get(liNext) : blf;
-
-						dataOut[idx / 2] = int8_t(meta0 | (meta1 << 4));
-						skyLightOut[idx / 2] = int8_t(sky0 | (sky1 << 4));
-						blockLightOut[idx / 2] = int8_t(light0 | (light1 << 4));
+							dataOut[idx / 2] = int8_t(meta0 | (meta1 << 4));
+							skyLightOut[idx / 2] = int8_t(sky0 | (sky1 << 4));
+							blockLightOut[idx / 2] = int8_t(light0 | (light1 << 4));
+						}
 					}
 				}
 			}
