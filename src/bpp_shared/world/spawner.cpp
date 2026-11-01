@@ -19,6 +19,7 @@
 #include "entities/entity_squid.h"
 #include "entities/entity_wolf.h"
 #include "entities/entity_zombie.h"
+#include "entities/entity_zombie_pig.h"
 #include "world.h"
 
 EntitySpawner::EntitySpawner() {
@@ -26,7 +27,7 @@ EntitySpawner::EntitySpawner() {
 	SpawnCategory water;
 	water.spawnMaterial = Material::Water();
 	water.spawnListDefault = { { std::make_shared<SquidEntity>(), []() { return std::make_shared<SquidEntity>(); },
-		                         10 } };
+	                             10 } };
 	water.spawnListForest = water.spawnListDefault;
 	water.cap = 5;
 	categories.push_back(water);
@@ -66,7 +67,8 @@ EntitySpawner::EntitySpawner() {
 		{ std::make_shared<SlimeEntity>(), []() { return std::make_shared<SlimeEntity>(); }, 10 },
 	};
 	hostile.spawnListNether = {
-		// TODO: zombie pigmen and ghast
+		//TODO: Ghast
+		{ std::make_shared<ZombiePigEntity>(), []() { return std::make_shared<ZombiePigEntity>(); }, 10 },
 	};
 	hostile.cap = 70;
 	categories.push_back(hostile);
@@ -138,8 +140,8 @@ void EntitySpawner::TrySpawnEntities(WorldManager& _world, const std::vector<Cli
 				continue;
 
 			Int3 anchorPos = { cpos.x * CHUNK_WIDTH + _world.rand.NextInt(CHUNK_WIDTH),
-				               _world.rand.NextInt(CHUNK_HEIGHT),
-				               cpos.z * CHUNK_WIDTH + _world.rand.NextInt(CHUNK_WIDTH) };
+			                   _world.rand.NextInt(CHUNK_HEIGHT),
+			                   cpos.z * CHUNK_WIDTH + _world.rand.NextInt(CHUNK_WIDTH) };
 
 			// The anchor must not be a solid cube, and its material must be the category's spawn material
 			if (_world.IsBlockNormalCube(anchorPos) || _world.GetMaterial(anchorPos) != category.spawnMaterial)

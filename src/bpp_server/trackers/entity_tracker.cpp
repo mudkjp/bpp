@@ -299,6 +299,17 @@ void EntityTracker::SpawnEntityForPlayer(EntityId _playerId, TrackedEntry& _enti
 		pkt.Serialize(pSession->stream);
 		break;
 	}
+	case EntityType::ZOMBIE_PIGMAN: {
+		Packet::SpawnMob pkt;
+		pkt.entityId = _entityEntry.entity->id;
+		pkt.mobType = PacketData::MobType::ZOMBIE_PIGMAN;
+		pkt.qPosition = QuantizePosition(_entityEntry.entity->position);
+		pkt.qRotation = { int8_t(QuantizeRotation(_entityEntry.entity->rotationYaw)),
+			              int8_t(QuantizeRotation(_entityEntry.entity->rotationPitch)) };
+		_entityEntry.entity->EncodeMetadata(pkt.metadata);
+		pkt.Serialize(pSession->stream);
+		break;
+	}
 	case EntityType::SKELETON: {
 		Packet::SpawnMob pkt;
 		pkt.entityId = _entityEntry.entity->id;

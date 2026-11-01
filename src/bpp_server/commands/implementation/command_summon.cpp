@@ -21,6 +21,7 @@
 #include "entities/entity_slime.h"
 #include "entities/entity_spider.h"
 #include "entities/entity_zombie.h"
+#include "entities/entity_zombie_pig.h"
 #include "entities/entity_wolf.h"
 #include "entities/entity_squid.h"
 #include "networking/packets.h"
@@ -35,6 +36,9 @@ EntityType GetEntityTypeFromString(std::string _name) {
 	}
 	if (_name == "zombie") {
 		return EntityType::ZOMBIE;
+	}
+	if (_name == "zombie_pigman") {
+		return EntityType::ZOMBIE_PIGMAN;
 	}
 	if (_name == "skeleton") {
 		return EntityType::SKELETON;
@@ -81,6 +85,8 @@ std::shared_ptr<Entity> GetEntityShared(EntityType _type) {
 		return std::make_shared<CreeperEntity>();
 	case EntityType::ZOMBIE:
 		return std::make_shared<ZombieEntity>();
+	case EntityType::ZOMBIE_PIGMAN:
+		return std::make_shared<ZombiePigEntity>();
 	case EntityType::SKELETON:
 		return std::make_shared<SkeletonEntity>();
 	case EntityType::SPIDER:

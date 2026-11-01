@@ -177,6 +177,7 @@ set(SHARED_SOURCES
     src/bpp_shared/entities/entity_animal.cpp
     src/bpp_shared/entities/entity_mob.cpp
     src/bpp_shared/entities/entity_zombie.cpp
+    src/bpp_shared/entities/entity_zombie_pig.cpp
     src/bpp_shared/entities/entity_hostile.cpp
     src/bpp_shared/entities/entity_skeleton.cpp
     src/bpp_shared/entities/entity_creeper.cpp
