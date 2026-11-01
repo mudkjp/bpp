@@ -12,9 +12,9 @@
 // as it's needed for various things,
 // such as NBT and Packet data
 
-std::string ToUTF8(std::u16string _str);
+std::string ToUTF8(const std::u16string& _str);
 char32_t DecodeUTF8Char(const std::string& _s, size_t& _i);
-std::u16string ToUCS2(std::string _str);
+std::u16string ToUCS2(const std::string& _str);
 inline std::string StripFormatting(const std::string& _str) {
 	std::string result;
 	result.reserve(_str.size());

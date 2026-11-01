@@ -7,7 +7,7 @@
 #include "logger.h"
 
 // Turn a UCS-2 String into a UTF-8 String
-std::string ToUTF8(std::u16string _str) {
+std::string ToUTF8(const std::u16string& _str) {
 	// UCS-2 limits all values to only be 0x0000 to 0xFFFF
 	// in UTF-16 land, 0xDC00–0xDFFF have a special purpose,
 	// which we will ignore
@@ -27,7 +27,6 @@ std::string ToUTF8(std::u16string _str) {
 			out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
 		}
 	}
-	out.shrink_to_fit();
 	return out;
 }
 
@@ -65,7 +64,7 @@ char32_t DecodeUTF8Char(const std::string& _s, size_t& _i) {
 }
 
 // Turn a UTF-8 String into a UCS-2 String
-std::u16string ToUCS2(std::string _str) {
+std::u16string ToUCS2(const std::string& _str) {
 	std::u16string out;
 	out.reserve(_str.size());
 	for (size_t i = 0; i < _str.size();) {

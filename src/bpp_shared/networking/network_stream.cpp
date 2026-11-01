@@ -119,15 +119,23 @@ void NetworkStream::WriteString16(const std::string& _str) {
 
 std::string NetworkStream::ReadString16() {
 	uint16_t len = Read<uint16_t>();
+	const size_t bytes = size_t(len) * sizeof(char16_t);
+
+	// On a short read the caller must Rollback() and retry later, so don't
+	// allocate or decode a string from the incomplete bytes.
+	if (readBuffer.size() - readPos < bytes) {
+		shortRead = true;
+		return {};
+	}
+
+	const uint8_t* src = readBuffer.data() + readPos;
+	readPos += bytes;
 
 	// Read as UTF-16 (2 bytes per char) regardless of platform wchar_t size
-	std::vector<uint16_t> buf(len);
-	ReadBytes(reinterpret_cast<uint8_t*>(buf.data()), len * sizeof(char16_t));
-
-	std::u16string result(len, u'\0');
+	std::u16string result;
+	result.reserve(len);
 	for (uint16_t i = 0; i < len; i++) {
-		// byteswap each UTF-16 unit, then widen to wchar_t
-		result[i] = static_cast<char16_t>(FromBigEndian(buf[i]));
+		result.push_back(static_cast<char16_t>((uint16_t(src[i * 2]) << 8) | uint16_t(src[i * 2 + 1])));
 	}
 	return ToUTF8(result);
 }
