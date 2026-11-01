@@ -218,6 +218,10 @@ struct NBTParser {
 
 			if (innerType == TAG_END && count > 0)
 				throw std::runtime_error("Invalid TAG_List");
+			// Every element occupies at least one byte, so a count larger than
+			// the remaining input can only be corrupt. Reject it before resize.
+			if (count < 0 || size_t(count) > length - pos) [[unlikely]]
+				throw std::runtime_error("NBT: list count out of bounds");
 
 			tag.list.reserve(size_t(count));
 			for (int i = 0; i < count; i++)
