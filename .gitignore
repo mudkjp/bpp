@@ -60,3 +60,5 @@ banned-ips.txt
 banned-players.txt
 *.kate-swp
 CMakeUserPresets.json
+# Held-out test fixtures (never committed)
+/tests/fixtures/

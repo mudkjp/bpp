@@ -10,9 +10,10 @@ cmake --build build/tests --target bpp_tests -j "$(nproc)"
 ctest --test-dir build/tests --output-on-failure
 ```
 
-`tests/fixtures` contains **held-out** data written by
-`tests/fixtures/generate_fixtures.py` using only Python's standard library, not
-by the C++ code under test. The fixtures cover:
+The fixtures are **held out and intentionally not committed**. The test suite
+looks in `tests/fixtures` by default (the directory is gitignored), or at the
+path passed via `-DBPP_TEST_FIXTURE_DIR=/path/to/private/fixtures`. The
+fixtures cover:
 
 - NBT kitchen-sink and large chunk-like payloads, plus truncated and corrupt
   inputs.
@@ -21,12 +22,6 @@ by the C++ code under test. The fixtures cover:
 - A complete `r.0.0.mcr` region file with one chunk.
 - UTF-8 to UTF-16LE text pairs.
 - A properties file with comments, whitespace and embedded `=` characters.
-
-Re-generating the fixtures is deterministic:
-
-```sh
-python3 tests/fixtures/generate_fixtures.py
-```
 
 The benchmarks report ns/op and MiB/s for NBT parsing/writing, deflate
 compression/decompression, chunk serialization, chunk generation, region

@@ -715,6 +715,13 @@ endforeach()
 # don't pay for the extra target. Run with `bpp_tests` or `bpp_tests --bench`.
 if(BPP_BUILD_TESTS)
     find_package(Threads REQUIRED)
+    # Fixtures are intentionally held out of the repository. Point this at a
+    # private fixture directory, or drop them into the default location.
+    set(BPP_TEST_FIXTURE_DIR "${PROJECT_SOURCE_DIR}/tests/fixtures" CACHE PATH
+        "Directory containing held-out test fixtures")
+    if(NOT EXISTS "${BPP_TEST_FIXTURE_DIR}")
+        message(WARNING "Held-out test fixtures not found at ${BPP_TEST_FIXTURE_DIR}; bpp_tests will fail until they are provided")
+    endif()
     add_executable(bpp_tests
         tests/test_main.cpp
         ${SHARED_SOURCES}
@@ -736,7 +743,7 @@ if(BPP_BUILD_TESTS)
         "${PROJECT_SOURCE_DIR}/src/bpp_shared/helpers"
     )
     target_compile_definitions(bpp_tests PRIVATE
-        BPP_TEST_FIXTURE_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures"
+        BPP_TEST_FIXTURE_DIR="${BPP_TEST_FIXTURE_DIR}"
         GENERATION_PRECISION_${GENERATION_PRECISION}
     )
     target_link_libraries(bpp_tests PRIVATE
