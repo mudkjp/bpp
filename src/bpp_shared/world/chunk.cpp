@@ -110,14 +110,17 @@ std::unique_ptr<SubChunk::NibbleLayer> MakeNibbleLayer(uint8_t _fill) {
 	return layer;
 }
 
-// A nibble layer is uniform when the first byte has matching halves and every other byte equals it
+// A nibble layer is uniform when every packed byte matches the first byte,
+// and the first byte has identical halves. This checks 2048 bytes instead of
+// calling the per-nibble getter 4096 times.
 bool CompactNibbleLayer(std::unique_ptr<SubChunk::NibbleLayer>& _layer, uint8_t& _fill) {
 	if (!_layer)
 		return false;
 
 	const uint8_t first = _layer->Get(0);
-	for (size_t i = 1; i < SubChunk::VOLUME; i++) {
-		if (_layer->Get(i) != first)
+	const uint8_t packed = uint8_t((first << 4) | first);
+	for (const uint8_t byte : _layer->data) {
+		if (byte != packed)
 			return false;
 	}
 
