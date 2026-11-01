@@ -519,6 +519,36 @@ void TestRegionManagerSaveQueue() {
 	manager.Release();
 }
 
+void TestSkylightMap() {
+	OverworldGenerator gen(0x5EED);
+	Chunk chunk;
+	chunk.cpos = { 0, 0 };
+	gen.GenerateChunk(chunk);
+	chunk.GenerateSkylightMap();
+
+	for (int x = 0; x < CHUNK_WIDTH; ++x) {
+		for (int z = 0; z < CHUNK_WIDTH; ++z) {
+			int height = 0;
+			for (int y = CHUNK_HEIGHT - 1; y >= 0; --y) {
+				if (Blocks::blockProperties[chunk.GetBlock({ x, y, z })].lightOpacity > 0) {
+					height = y + 1;
+					break;
+				}
+			}
+			CHECK_EQ(int(chunk.GetHeightValue({ x, z })), height);
+
+			int skyLight = 15;
+			for (int y = height - 1; y >= 0; --y) {
+				skyLight -= std::max<int>(1, int(Blocks::blockProperties[chunk.GetBlock({ x, y, z })].lightOpacity));
+				skyLight = std::max<int>(0, skyLight);
+				CHECK_EQ(int(chunk.GetSkyLight({ x, y, z })), skyLight);
+			}
+			for (int y = height; y < CHUNK_HEIGHT; ++y)
+				CHECK_EQ(int(chunk.GetSkyLight({ x, y, z })), 15);
+		}
+	}
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -610,6 +640,7 @@ std::vector<TestCase> Tests() {
 		{ "nbt_malformed", TestNbtMalformed },
 		{ "ucs2_fixtures", TestUcs2Fixtures },
 		{ "chunk_serializer_fixture", TestChunkSerializerFixture },
+		{ "skylight_map", TestSkylightMap },
 		{ "region_fixture", TestRegionFixture },
 		{ "region_overwrite_reuses_sectors", TestRegionOverwriteReusesSectors },
 		{ "region_manager_save_queue", TestRegionManagerSaveQueue },

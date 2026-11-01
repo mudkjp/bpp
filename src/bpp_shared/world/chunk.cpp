@@ -42,28 +42,38 @@ void Chunk::GenerateSkylightMap() {
 	GenerateHeightMap();
 
 	// Every slot that starts at or above the tallest column is open sky in every column, so light it in one go
-	const int bulkStart = std::min<int>(CHUNK_HEIGHT,
-	                                               (GetHighestPoint() + SUB_CHUNK_SIZE - 1) & ~(SUB_CHUNK_SIZE - 1));
+	const int highest = GetHighestPoint();
+	const int bulkStart = std::min<int>(CHUNK_HEIGHT, (highest + SUB_CHUNK_SIZE - 1) & ~(SUB_CHUNK_SIZE - 1));
 
-	for (int i = bulkStart / SUB_CHUNK_SIZE; i < SUB_CHUNK_COUNT; i++)
-		subChunks[size_t(i)].FillSkyLight(15);
+	// A slice only needs a sky-light layer when the tallest column has terrain
+	// inside it (i.e. a value below 15). Otherwise the whole slice stays at 15.
+	for (int s = 0; s < SUB_CHUNK_COUNT; s++) {
+		if (s * SUB_CHUNK_SIZE >= bulkStart)
+			subChunks[size_t(s)].FillSkyLight(15);
+		else
+			subChunks[size_t(s)].AllocSkyLight();
+	}
 
 	for (int x = 0; x < CHUNK_WIDTH; x++) {
 		for (int z = 0; z < CHUNK_WIDTH; z++) {
-			int height = GetHeightValue({ x, z });
-			for (int y = bulkStart - 1; y >= height; y--)
-				SetSkyLight({ x, y, z }, 15);
+			const int height = GetHeightValue({ x, z });
 			int skyLight = 15;
 			for (int y = height - 1; y >= 0; y--) {
 				skyLight -= std::max<int>(1,
 				                                     int(Blocks::blockProperties[GetBlock({ x, y, z })].lightOpacity));
 				skyLight = std::max<int>(0, skyLight);
-				SetSkyLight({ x, y, z }, uint8_t(skyLight));
+				subChunks[size_t(y >> 4)].skyLight->Set(SubChunk::LocalIndex({ x, y, z }), uint8_t(skyLight));
 			}
 		}
 	}
 	isModified = true;
-	Compact();
+	// Sky layers are either null (uniform 15) or known non-uniform here. Only
+	// the other layers still need a uniform check.
+	for (auto& sub : subChunks) {
+		sub.CompactBlocks();
+		sub.CompactMeta();
+		sub.CompactBlockLight();
+	}
 }
 
 void Chunk::RelightColumn(Int2 _pos) {
