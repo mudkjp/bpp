@@ -10,6 +10,7 @@
 #include "chunk.h"
 #include "subchunk.h"
 #include "helpers/deflate_pool.h"
+#include <cstring>
 #include <vector>
 
 namespace ChunkSerializer {
@@ -29,11 +30,16 @@ inline std::vector<uint8_t> Serialize(const Chunk& _chunk, int _xmin = 0, int _x
 	// TODO: Maybe shrink these after a few ticks?
 	// Most chunk serializations should only take a few KB on average!
 	thread_local std::vector<uint8_t> raw;
-	raw.assign(size_t(total), 0);
+	raw.resize(size_t(total));
 	uint8_t* blockData = raw.data();
 	uint8_t* metaData = blockData + blocks;
 	uint8_t* blockLight = metaData + nibbles;
 	uint8_t* skyLight = blockLight + nibbles;
+
+	// Block and light bytes are always fully written below. Metadata is the
+	// only layer that may be skipped (a zero fill with no allocated layer),
+	// so only clear that small region instead of the whole buffer.
+	std::memset(metaData, 0, size_t(nibbles));
 
 	auto packNibble = [](uint8_t& _byte, uint8_t _val, bool _high) {
 		if (_high)
@@ -41,6 +47,60 @@ inline std::vector<uint8_t> Serialize(const Chunk& _chunk, int _xmin = 0, int _x
 		else
 			_byte = uint8_t((_byte & 0xF0) | (_val & 0x0F));
 	};
+
+	// The common full-chunk / sub-region case has an even y range, so two
+	// vertical voxels share one output nibble byte. Handle them together:
+	// fewer iterations, no per-voxel layer-presence branches, and one direct
+	// write per nibble byte instead of read-modify-write twice.
+	if ((_ymin & 1) == 0 && (_ymax & 1) == 0) {
+		int i = 0;
+		for (int x = _xmin; x < _xmax; x++) {
+			for (int z = _zmin; z < _zmax; z++) {
+				for (int y = _ymin; y < _ymax; y += 2) {
+					const SubChunk& sub = _chunk.subChunks[size_t(y >> 4)];
+					const int idx0 = SubChunk::LocalIndex({ x, y, z });
+					const int idx1 = idx0 + SUB_CHUNK_SIZE * SUB_CHUNK_SIZE;
+
+					const SubChunk::BlockLayer* blockLayer = sub.blocks.get();
+					const SubChunk::NibbleLayer* metaLayer = sub.meta.get();
+					const SubChunk::NibbleLayer* blockLightLayer = sub.blockLight.get();
+					const SubChunk::NibbleLayer* skyLightLayer = sub.skyLight.get();
+
+					if (blockLayer) {
+						blockData[i] = uint8_t(blockLayer->types[size_t(idx0)]);
+						blockData[i + 1] = uint8_t(blockLayer->types[size_t(idx1)]);
+					} else {
+						blockData[i] = uint8_t(sub.blockFill);
+						blockData[i + 1] = uint8_t(sub.blockFill);
+					}
+
+					if (metaLayer) {
+						metaData[i >> 1] = uint8_t((metaLayer->Get(idx0) & 0x0F) |
+						                           ((metaLayer->Get(idx1) & 0x0F) << 4));
+					} else if (sub.metaFill != 0) {
+						metaData[i >> 1] = uint8_t(sub.metaFill | (sub.metaFill << 4));
+					}
+
+					if (blockLightLayer) {
+						blockLight[i >> 1] = uint8_t((blockLightLayer->Get(idx0) & 0x0F) |
+						                             ((blockLightLayer->Get(idx1) & 0x0F) << 4));
+					} else {
+						blockLight[i >> 1] = uint8_t(sub.blockLightFill | (sub.blockLightFill << 4));
+					}
+
+					if (skyLightLayer) {
+						skyLight[i >> 1] = uint8_t((skyLightLayer->Get(idx0) & 0x0F) |
+						                           ((skyLightLayer->Get(idx1) & 0x0F) << 4));
+					} else {
+						skyLight[i >> 1] = uint8_t(sub.skyLightFill | (sub.skyLightFill << 4));
+					}
+
+					i += 2;
+				}
+			}
+		}
+		return Deflate::Compress(Deflate::Format::Zlib, raw, 1);
+	}
 
 	int i = 0;
 	for (int x = _xmin; x < _xmax; x++) {
