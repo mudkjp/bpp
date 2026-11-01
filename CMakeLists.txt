@@ -17,6 +17,7 @@ set_property(CACHE GENERATION_PRECISION PROPERTY STRINGS "DOUBLE" "FLOAT" "LONG"
 
 option(BUILD_SERVER "Build as server" ON)
 option(SDL_VENDORED "Use vendored (locally built) SDL library" ON)
+option(BPP_BUILD_TESTS "Build unit tests and micro-benchmarks" OFF)
 
 # Nintendo 3DS / Switch homebrew (devkitPro). Detected from the toolchain file
 # (see BUILDING_CONSOLE.md); BPP_TARGET=3DS|SWITCH forces it for odd setups.
@@ -710,13 +711,65 @@ foreach(FILE ${SOURCE_FILES})
     endforeach()
 endforeach()
 
+# Tests and micro-benchmarks. Kept out of normal builds so release artifacts
+# don't pay for the extra target. Run with `bpp_tests` or `bpp_tests --bench`.
+if(BPP_BUILD_TESTS)
+    find_package(Threads REQUIRED)
+    add_executable(bpp_tests
+        tests/test_main.cpp
+        ${SHARED_SOURCES}
+        ${PLATFORM_SOURCES}
+    )
+    target_include_directories(bpp_tests PRIVATE
+        "${PROJECT_SOURCE_DIR}/include"
+        "${PROJECT_SOURCE_DIR}/src/bpp_server"
+        "${PROJECT_SOURCE_DIR}/src/bpp_server/chunk_io"
+        "${PROJECT_SOURCE_DIR}/src/bpp_shared"
+        "${PROJECT_SOURCE_DIR}/src/bpp_utilities"
+        "${PROJECT_SOURCE_DIR}/src/bpp_shared/enums"
+        "${PROJECT_SOURCE_DIR}/src/bpp_shared/enums/network"
+        "${PROJECT_SOURCE_DIR}/src/bpp_shared/strings"
+        "${PROJECT_SOURCE_DIR}/src/bpp_shared/logger"
+        "${PROJECT_SOURCE_DIR}/src/bpp_shared/world"
+        "${PROJECT_SOURCE_DIR}/src/bpp_shared/world/noise"
+        "${PROJECT_SOURCE_DIR}/src/bpp_shared/helpers/java"
+        "${PROJECT_SOURCE_DIR}/src/bpp_shared/helpers"
+    )
+    target_compile_definitions(bpp_tests PRIVATE
+        BPP_TEST_FIXTURE_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures"
+        GENERATION_PRECISION_${GENERATION_PRECISION}
+    )
+    target_link_libraries(bpp_tests PRIVATE
+        $<IF:$<TARGET_EXISTS:libdeflate::libdeflate_shared>,libdeflate::libdeflate_shared,libdeflate::libdeflate_static>
+        Threads::Threads
+    )
+    # Several shared headers rely on the include order provided by the server
+    # PCH; mirror the relevant umbrella header here.
+    target_precompile_headers(bpp_tests PRIVATE
+        <format>
+        "${PROJECT_SOURCE_DIR}/src/bpp_shared/nbt/nbt.h"
+        "${PROJECT_SOURCE_DIR}/src/bpp_shared/numeric_structs.h"
+        "${PROJECT_SOURCE_DIR}/src/bpp_shared/world/world.h"
+        "${PROJECT_SOURCE_DIR}/src/bpp_shared/helpers/username.h"
+        "${PROJECT_SOURCE_DIR}/src/bpp_shared/entities/entity_player.h"
+        "${PROJECT_SOURCE_DIR}/src/bpp_server/player_conn/player_session.h"
+    )
+    if(NOT WIN32 AND NOT APPLE AND UNIX AND LINUX)
+        target_link_libraries(bpp_tests PRIVATE atomic)
+    endif()
+    if(TARGET replxx::replxx)
+        target_link_libraries(bpp_tests PRIVATE replxx::replxx)
+    endif()
+    enable_testing()
+    add_test(NAME bpp_tests COMMAND bpp_tests)
+endif()
+
 # Detect CPU architecture
 if(CMAKE_SYSTEM_PROCESSOR)
     set(ARCH_SUFFIX "${CMAKE_SYSTEM_PROCESSOR}")
 else()
     set(ARCH_SUFFIX "unknown")
 endif()
-
 # Set up CPack for AppImage
 set(CPACK_PACKAGE_NAME "BetrockPlusPlus")
 set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
