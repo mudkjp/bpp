@@ -53,9 +53,9 @@ public:
 	virtual void Move(Vec3& _velocity) override;
 	virtual ItemStack* GetHeldItem();
 	virtual void SetHeldItem(ItemStack _stack);
+	virtual bool HeadInOpaqueBlock();
 	void Heal(int _health);
 	bool AABBNotInLiquidOrObstructed(AABB& _collider);
-	bool HeadInOpaqueBlock();
 	bool HeadInWater();
 	bool FollowPath();
 	void DealDamage(int _damage);
