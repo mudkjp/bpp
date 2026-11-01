@@ -24,7 +24,7 @@ struct PigEntity : public AnimalEntity {
 	std::optional<Tag> SerializeToNbt() override;
 	void LoadFromNbt(Tag& _nbt) override;
 
-	void OnStruckByLightning(LightningEntity& _bolt) override {
+	void OnStruckByLightning(LightningEntity& /*_bolt*/) override {
 		if (!world)
 			return;
 
