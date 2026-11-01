@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 // Library for emulating Java/Java Edition math functions
 
@@ -93,12 +94,10 @@ constexpr inline int32_t FloatToInt32(const float _value) {
 * @param value The input string
 * @return Hashed string expressed as an integer
 */
-inline int32_t HashCode(const std::string _value) {
+inline int32_t HashCode(std::string_view _value) {
 	int32_t h = 0;
-	if (h == 0 && _value.size() > 0) {
-		for (size_t i = 0; i < _value.size(); i++) {
-			h = 31 * h + _value[i];
-		}
+	for (const char c : _value) {
+		h = 31 * h + c;
 	}
 	return h;
 }
