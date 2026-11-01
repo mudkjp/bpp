@@ -297,7 +297,7 @@ void RegisterMiscBehaviors() {
 	// Light when punched and the player is holding flint and steel
 	blockBehaviors[BLOCK_TNT].onBlockDestroyedByPlayer = [](WorldManager& _world, Int3 _pos,
 	                                                        Entity& _destroyer) -> void {
-		auto& player = dynamic_cast<PlayerEntity&>(_destroyer);
+		auto& player = static_cast<PlayerEntity&>(_destroyer);
 		auto heldItem = player.GetHeldItem();
 
 		if (heldItem && heldItem->id == Items::Id::FLINT_AND_STEEL) {

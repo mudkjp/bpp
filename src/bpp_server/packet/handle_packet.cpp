@@ -696,7 +696,7 @@ void InteractWithEntity(Packet::InteractWithEntity& _pkt, PlayerSession& _sessio
 	ItemStack* heldItem = _session.inventory.GetHeldItem();
 	if (!heldItem) {
 		if (!_pkt.attack) {
-			PlayerEntity* playerPtr = dynamic_cast<PlayerEntity*>(sourceEntity.get());
+			PlayerEntity* playerPtr = static_cast<PlayerEntity*>(sourceEntity.get());
 			entity->OnPlayerInteract(playerPtr);
 			return;
 		}
@@ -711,7 +711,7 @@ void InteractWithEntity(Packet::InteractWithEntity& _pkt, PlayerSession& _sessio
 		if (_pkt.attack) {
 			Items::AttackWithItem(*entity, *sourceEntity, heldItem);
 		} else {
-			PlayerEntity* playerPtr = dynamic_cast<PlayerEntity*>(sourceEntity.get());
+			PlayerEntity* playerPtr = static_cast<PlayerEntity*>(sourceEntity.get());
 			entity->OnPlayerInteract(playerPtr);
 		}
 		return;
@@ -729,7 +729,7 @@ void InteractWithEntity(Packet::InteractWithEntity& _pkt, PlayerSession& _sessio
 		if (behavior.onEntityUse)
 			behavior.onEntityUse(_world, *entity, heldItem);
 		else {
-			PlayerEntity* playerPtr = dynamic_cast<PlayerEntity*>(sourceEntity.get());
+			PlayerEntity* playerPtr = static_cast<PlayerEntity*>(sourceEntity.get());
 			entity->OnPlayerInteract(playerPtr);
 		}
 	}

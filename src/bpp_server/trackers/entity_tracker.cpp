@@ -253,7 +253,7 @@ void EntityTracker::SpawnEntityForPlayer(EntityId _playerId, TrackedEntry& _enti
 		auto username = server->GetUsernameByEntityId(_entityEntry.entity->id);
 		if (username.empty()) {
 			// Fallback
-			auto& playerEntity = dynamic_cast<EntityMPPlayer&>(*_entityEntry.entity);
+			auto& playerEntity = static_cast<EntityMPPlayer&>(*_entityEntry.entity);
 			username = playerEntity.session ? playerEntity.session->username : " ";
 		}
 		pkt.username = username;
@@ -269,7 +269,7 @@ void EntityTracker::SpawnEntityForPlayer(EntityId _playerId, TrackedEntry& _enti
 			passengerPkt.Serialize(pSession->stream);
 		}
 		// If they're already sleeping, let the new joiner see them in bed.
-		if (auto* mpPlayer = dynamic_cast<EntityMPPlayer*>(_entityEntry.entity)) {
+		if (auto* mpPlayer = static_cast<EntityMPPlayer*>(_entityEntry.entity)) {
 			if (mpPlayer->isSleeping) {
 				Packet::InteractWithBlock sleepingAnim;
 				sleepingAnim.entityId = mpPlayer->id;
@@ -395,7 +395,7 @@ void EntityTracker::SpawnEntityForPlayer(EntityId _playerId, TrackedEntry& _enti
 
 		if (!owner || owner->isDead)
 			break;
-		auto* mpOwner = dynamic_cast<EntityMPPlayer*>(owner.get());
+		auto* mpOwner = static_cast<EntityMPPlayer*>(owner.get());
 		if (!mpOwner || !mpOwner->session)
 			break;
 
@@ -498,7 +498,7 @@ void EntityTracker::SendPacketToPlayersInTrackedEntry(Packet::BasePacket& _pkt, 
 		auto playerIt = trackedEntities.find(playerId);
 		if (playerIt == trackedEntities.end()) continue;
 
-		auto* player = dynamic_cast<EntityMPPlayer*>(playerIt->second.entity);
+		auto* player = static_cast<EntityMPPlayer*>(playerIt->second.entity);
 		if (!player || !player->session) continue;
 		_pkt.Serialize(player->session->stream);
 	}
@@ -562,7 +562,7 @@ void EntityTracker::SendEquipmentState(TrackedEntry& _trackedEntry, std::shared_
 		pkt.Serialize(_targetSession->stream);
 	};
 
-	MobileEntity& entity = dynamic_cast<MobileEntity&>(*_trackedEntry.entity);
+	MobileEntity& entity = static_cast<MobileEntity&>(*_trackedEntry.entity);
 	updateEquipmentSlot(4, entity.armor[0]);
 	updateEquipmentSlot(3, entity.armor[1]);
 	updateEquipmentSlot(2, entity.armor[2]);
@@ -585,7 +585,7 @@ void EntityTracker::UpdateEquipmentState(TrackedEntry& _trackedEntry) {
 	};
 
 	auto& equipment = _trackedEntry.equipmentProfile;
-	MobileEntity& entity = dynamic_cast<MobileEntity&>(*_trackedEntry.entity);
+	MobileEntity& entity = static_cast<MobileEntity&>(*_trackedEntry.entity);
 	ItemStack none = {};
 	auto helmet = entity.armor[0] ? entity.armor[0] : &none;
 	auto chest = entity.armor[1] ? entity.armor[1] : &none;
