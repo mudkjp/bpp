@@ -24,6 +24,8 @@
 #include "entities/entity_zombie_pig.h"
 #include "entities/entity_wolf.h"
 #include "entities/entity_squid.h"
+#include "entities/entity_fireball.h"
+#include "entities/entity_ghast.h"
 #include "networking/packets.h"
 #include <memory>
 #include <utility>
@@ -31,6 +33,9 @@
 namespace {
 
 EntityType GetEntityTypeFromString(std::string _name) {
+	if (_name == "fireball") {
+		return EntityType::FIREBALL;
+	}
 	if (_name == "creeper") {
 		return EntityType::CREEPER;
 	}
@@ -76,6 +81,9 @@ EntityType GetEntityTypeFromString(std::string _name) {
 	if (_name == "wolf") {
 		return EntityType::WOLF;
 	}
+	if (_name == "ghast") {
+		return EntityType::GHAST;
+	}
 	return EntityType::NONE;
 }
 
@@ -109,6 +117,10 @@ std::shared_ptr<Entity> GetEntityShared(EntityType _type) {
 		return std::make_shared<SlimeEntity>();
 	case EntityType::WOLF:
 		return std::make_shared<WolfEntity>();
+	case EntityType::FIREBALL:
+		return std::make_shared<FireballEntity>();
+	case EntityType::GHAST:
+		return std::make_shared<GhastEntity>();
 	default:
 		return nullptr;
 	}

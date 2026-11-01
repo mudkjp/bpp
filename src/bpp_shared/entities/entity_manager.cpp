@@ -28,6 +28,7 @@
 #include "entity_wolf.h"
 #include "entity_zombie_pig.h"
 #include "entity_player.h"
+#include "entity_ghast.h"
 #include "gamerules.h"
 #include "world.h"
 #include "username.h"
@@ -477,6 +478,11 @@ void EntityManager::CreateEntityFromNbt(Tag& _nbt) {
 		WolfEntity entity;
 		entity.LoadFromNbt(_nbt);
 		AddEntity(std::make_shared<WolfEntity>(entity));
+	}
+	if (id == "Ghast") {
+		GhastEntity entity;
+		entity.LoadFromNbt(_nbt);
+		AddEntity(std::make_shared<GhastEntity>(entity));
 	}
 }
 

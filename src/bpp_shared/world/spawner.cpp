@@ -20,14 +20,14 @@
 #include "entities/entity_wolf.h"
 #include "entities/entity_zombie.h"
 #include "entities/entity_zombie_pig.h"
+#include "entities/entity_ghast.h"
 #include "world.h"
 
 EntitySpawner::EntitySpawner() {
 	// Water
 	SpawnCategory water;
 	water.spawnMaterial = Material::Water();
-	water.spawnListDefault = { { std::make_shared<SquidEntity>(), []() { return std::make_shared<SquidEntity>(); },
-	                             10 } };
+	water.spawnListDefault = { { std::make_shared<SquidEntity>(), []() { return std::make_shared<SquidEntity>(); }, 10 } };
 	water.spawnListForest = water.spawnListDefault;
 	water.cap = 5;
 	categories.push_back(water);
@@ -45,7 +45,7 @@ EntitySpawner::EntitySpawner() {
 		{ std::make_shared<CowEntity>(), []() { return std::make_shared<CowEntity>(); }, 8 },
 		{ std::make_shared<ChickenEntity>(), []() { return std::make_shared<ChickenEntity>(); }, 10 },
 		{ std::make_shared<SheepEntity>(), []() { return std::make_shared<SheepEntity>(); }, 12 },
-		{ std::make_shared<WolfEntity>(), []() { return std::make_shared<WolfEntity>(); }, 2, 8 }
+		{ std::make_shared<WolfEntity>(), []() { return std::make_shared<WolfEntity>(); }, 2, /*maxSpawnedInChunk=*/8 }
 	};
 	passive.cap = 15;
 	categories.push_back(passive);
@@ -67,7 +67,7 @@ EntitySpawner::EntitySpawner() {
 		{ std::make_shared<SlimeEntity>(), []() { return std::make_shared<SlimeEntity>(); }, 10 },
 	};
 	hostile.spawnListNether = {
-		//TODO: Ghast
+		{ std::make_shared<GhastEntity>(), []() { return std::make_shared<GhastEntity>(); }, 10, /*maxSpawnedInChunk=*/1 },
 		{ std::make_shared<ZombiePigEntity>(), []() { return std::make_shared<ZombiePigEntity>(); }, 10 },
 	};
 	hostile.cap = 70;

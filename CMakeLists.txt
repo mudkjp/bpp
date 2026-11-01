@@ -192,6 +192,8 @@ set(SHARED_SOURCES
     src/bpp_shared/entities/entity_tnt.cpp
     src/bpp_shared/entities/entity_wolf.cpp
     src/bpp_shared/entities/entity_lightning_bolt.cpp
+    src/bpp_shared/entities/entity_fireball.cpp
+    src/bpp_shared/entities/entity_ghast.cpp
 
     # NBT
     src/bpp_shared/nbt/nbt_textifier.cpp
