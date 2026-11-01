@@ -725,6 +725,14 @@ void RunBenchmarks() {
 		return size_t(generated.GetBlock({ 8, 64, 8 }));
 	});
 
+	Chunk skylit;
+	skylit.cpos = { 0, 0 };
+	gen.GenerateChunk(skylit);
+	Bench("chunk_skylight_map", CHUNK_VOLUME, [&] {
+		skylit.GenerateSkylightMap();
+		return size_t(skylit.GetSkyLight({ 8, 64, 8 }));
+	});
+
 	TempDir temp("region-bench");
 	std::filesystem::copy_file(Fixture("region/r.0.0.mcr"), temp.path / "r.0.0.mcr");
 	Region region(Int32_2{ 0, 0 }, temp.path.string());
