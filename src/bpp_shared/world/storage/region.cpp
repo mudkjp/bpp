@@ -406,8 +406,10 @@ std::vector<uint8_t> Region::EncodeNbtData(const std::shared_ptr<Chunk>& _chunk,
 
 	root.compound["Level"] = std::move(level);
 
-	// Serialize to bytes
-	std::vector<uint8_t> raw;
+	// Serialize to bytes. Keep the scratch buffer per thread: chunk saves are
+	// frequent and the serialized NBT is around 80 KiB for a full chunk.
+	thread_local std::vector<uint8_t> raw;
+	raw.clear();
 	NBTwriter writer(raw, root);
 	// Compress
 	return Deflate::Compress(Deflate::Format::Zlib, raw, 1);
