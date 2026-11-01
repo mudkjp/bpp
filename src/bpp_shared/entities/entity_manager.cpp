@@ -26,6 +26,7 @@
 #include "entity_zombie.h"
 #include "entity_squid.h"
 #include "entity_wolf.h"
+#include "entity_zombie_pig.h"
 #include "entity_player.h"
 #include "gamerules.h"
 #include "world.h"
@@ -373,6 +374,11 @@ std::vector<Entity*> EntityManager::GetLivingEntitiesWithinAabb(const AABB& _box
 void EntityManager::CreateEntityFromNbt(Tag& _nbt) {
 	// Load an entity from the nbt list
 	std::string id = _nbt.compound["id"].GetString();
+	if (id == "PigZombie") {
+		ZombiePigEntity entity;
+		entity.LoadFromNbt(_nbt);
+		AddEntity(std::make_shared<ZombiePigEntity>(entity));
+	}
 	if (id == "Painting") {
 		PaintingEntity entity;
 		entity.LoadFromNbt(_nbt);
