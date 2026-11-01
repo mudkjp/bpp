@@ -176,16 +176,10 @@ void RegionManager::SaveChunk(const std::shared_ptr<Chunk> _chunk, bool _unloadE
 		entities = std::make_shared<const std::vector<Tag>>(
 		    world->entityManager.CollectEntitiesForSave(snapshot->cpos, _unloadEntities));
 	SnapshotContainer container{ std::move(snapshot), std::move(entities) };
+	const Int32_2 cpos = container.chunkSnapshot->cpos;
 
 	std::lock_guard lk(saveQueueMutex);
-
-	for (auto& existing : saveQueue) {
-		if (existing.chunkSnapshot && existing.chunkSnapshot->cpos == container.chunkSnapshot->cpos) {
-			existing = std::move(container);
-			return;
-		}
-	}
-	saveQueue.push_back(std::move(container));
+	saveQueue.insert_or_assign(cpos, std::move(container));
 }
 
 void RegionManager::LoadChunk(const Int32_2 _cpos) {
@@ -234,16 +228,14 @@ std::shared_ptr<Chunk> RegionManager::GetChunk(Int32_2 _cpos) {
 }
 
 void RegionManager::PumpPipeline() {
-	std::vector<SnapshotContainer> toSave;
+	std::unordered_map<Int32_2, SnapshotContainer> toSave;
 	{
 		std::lock_guard lk(saveQueueMutex);
 		toSave.swap(saveQueue);
-		if (saveQueue.empty())
-			saveQueue.shrink_to_fit();
 	}
 
-	std::vector<SnapshotContainer> requeue;
-	for (auto& snapshot : toSave) {
+	std::unordered_map<Int32_2, SnapshotContainer> requeue;
+	for (auto& [pos, snapshot] : toSave) {
 		auto& chunk = snapshot.chunkSnapshot;
 		std::shared_ptr<const std::vector<Tag>> entitySnapshot = snapshot.entitySnapshot; // shared_ptr copy
 		Int32_2 rpos{ chunk->cpos.x >> 5, chunk->cpos.z >> 5 };
@@ -253,7 +245,7 @@ void RegionManager::PumpPipeline() {
 		auto region = LoadRegion(rpos, state); // shared_ptr keeps Region alive for the task
 		if (!region) {
 			if (state == LoadState::CACHE_BUSY) {
-				requeue.push_back(std::move(snapshot)); // keep chunk + entities together
+				requeue.insert_or_assign(pos, std::move(snapshot)); // keep chunk + entities together
 			} else {
 				FatalIo("Region failed to load!", chunk->cpos);
 			}
@@ -278,8 +270,8 @@ void RegionManager::PumpPipeline() {
 
 	if (!requeue.empty()) {
 		std::lock_guard lk(saveQueueMutex);
-		saveQueue.insert(saveQueue.end(), std::make_move_iterator(requeue.begin()),
-		                 std::make_move_iterator(requeue.end()));
+		for (auto& [pos, snapshot] : requeue)
+			saveQueue.insert_or_assign(pos, std::move(snapshot));
 	}
 
 	// Try to merge any pending regions that couldn't fit before

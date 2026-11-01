@@ -27,7 +27,9 @@ struct RegionManager {
 	static constexpr size_t MAX_PENDING_REGIONS = 32;
 
 	std::mutex saveQueueMutex;
-	std::vector<SnapshotContainer> saveQueue;
+	// Keyed by chunk position so repeated saves of the same chunk replace the
+	// pending snapshot in O(1) instead of scanning the whole queue.
+	std::unordered_map<Int32_2, SnapshotContainer> saveQueue;
 
 	std::mutex outChunksMutex;
 	std::unordered_map<Int32_2, std::shared_ptr<Chunk>> outChunks;
