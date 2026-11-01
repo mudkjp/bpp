@@ -252,14 +252,19 @@ struct ChunkSender {
 		auto srIt = subRegionFlight.find(&_session);
 		if (srIt != subRegionFlight.end()) {
 			auto& srQueue = srIt->second;
-			while (!srQueue.empty()) {
-				auto& psr = srQueue.front();
+			size_t ready = 0;
+			while (ready < srQueue.size()) {
+				auto& psr = srQueue[ready];
 				if (!psr.data.valid() || psr.data.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
 					break;
 				psr.header.compressedData = psr.data.get();
 				psr.header.Serialize(_session.stream);
-				srQueue.erase(srQueue.begin());
+				++ready;
 			}
+			// Erase the whole finished prefix at once; erasing front() in a
+			// loop moves every remaining packet on each iteration.
+			if (ready > 0)
+				srQueue.erase(srQueue.begin(), srQueue.begin() + static_cast<std::ptrdiff_t>(ready));
 		}
 	}
 
