@@ -25,7 +25,7 @@ void ZombiePigEntity::BecomeAngryAt(Entity* _entity) {
 }
 
 bool ZombiePigEntity::AttackEntityFrom(Entity* _entity, int _damage, DamageType _type) {
-	if (_entity->type == EntityType::PLAYER) {
+	if (_entity && _entity->type == EntityType::PLAYER) {
 		auto friends = world->entityManager.GetEntitiesWithinAabbOfType(collider.Expand(32.0, 32.0, 32.0), this->type);
 
 		for (const auto& entity : friends) {
