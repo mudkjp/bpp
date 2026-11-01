@@ -53,49 +53,78 @@ inline std::vector<uint8_t> Serialize(const Chunk& _chunk, int _xmin = 0, int _x
 	// fewer iterations, no per-voxel layer-presence branches, and one direct
 	// write per nibble byte instead of read-modify-write twice.
 	if ((_ymin & 1) == 0 && (_ymax & 1) == 0) {
-		int i = 0;
 		for (int x = _xmin; x < _xmax; x++) {
 			for (int z = _zmin; z < _zmax; z++) {
-				for (int y = _ymin; y < _ymax; y += 2) {
-					const SubChunk& sub = _chunk.subChunks[size_t(y >> 4)];
-					const int idx0 = SubChunk::LocalIndex({ x, y, z });
-					const int idx1 = idx0 + SUB_CHUNK_SIZE * SUB_CHUNK_SIZE;
+				for (int s = 0; s < SUB_CHUNK_COUNT; s++) {
+					const int sy0 = std::max<int>(_ymin, s * SUB_CHUNK_SIZE);
+					const int sy1 = std::min<int>(_ymax, (s + 1) * SUB_CHUNK_SIZE);
+					if (sy0 >= sy1)
+						continue;
 
+					const SubChunk& sub = _chunk.subChunks[size_t(s)];
 					const SubChunk::BlockLayer* blockLayer = sub.blocks.get();
 					const SubChunk::NibbleLayer* metaLayer = sub.meta.get();
 					const SubChunk::NibbleLayer* blockLightLayer = sub.blockLight.get();
 					const SubChunk::NibbleLayer* skyLightLayer = sub.skyLight.get();
 
-					if (blockLayer) {
-						blockData[i] = uint8_t(blockLayer->types[size_t(idx0)]);
-						blockData[i + 1] = uint8_t(blockLayer->types[size_t(idx1)]);
+					int i = sy0 + (z * CHUNK_HEIGHT) + (x * CHUNK_HEIGHT * CHUNK_WIDTH);
+					int li = SubChunk::LocalIndex({ x, sy0, z });
+
+					if (blockLayer && metaLayer && blockLightLayer && skyLightLayer) {
+						// Fully allocated slice: no branches inside the hot loop.
+						for (int y = sy0; y < sy1; y += 2, i += 2, li += SUB_CHUNK_SIZE * SUB_CHUNK_SIZE * 2) {
+							const int li1 = li + SUB_CHUNK_SIZE * SUB_CHUNK_SIZE;
+							blockData[i] = uint8_t(blockLayer->types[size_t(li)]);
+							blockData[i + 1] = uint8_t(blockLayer->types[size_t(li1)]);
+							metaData[i >> 1] = uint8_t((metaLayer->Get(li) & 0x0F) |
+							                           ((metaLayer->Get(li1) & 0x0F) << 4));
+							blockLight[i >> 1] = uint8_t((blockLightLayer->Get(li) & 0x0F) |
+							                             ((blockLightLayer->Get(li1) & 0x0F) << 4));
+							skyLight[i >> 1] = uint8_t((skyLightLayer->Get(li) & 0x0F) |
+						                           ((skyLightLayer->Get(li1) & 0x0F) << 4));
+						}
+					} else if (!blockLayer && !metaLayer && !blockLightLayer && !skyLightLayer) {
+						// Uniform slice: fill whole pairs without reading any layer.
+						const uint8_t blockFill = uint8_t(sub.blockFill);
+						const uint8_t metaFill = uint8_t(sub.metaFill | (sub.metaFill << 4));
+						const uint8_t blockLightFill = uint8_t(sub.blockLightFill | (sub.blockLightFill << 4));
+						const uint8_t skyLightFill = uint8_t(sub.skyLightFill | (sub.skyLightFill << 4));
+						for (int y = sy0; y < sy1; y += 2, i += 2) {
+							blockData[i] = blockFill;
+							blockData[i + 1] = blockFill;
+							metaData[i >> 1] = metaFill;
+							blockLight[i >> 1] = blockLightFill;
+							skyLight[i >> 1] = skyLightFill;
+						}
 					} else {
-						blockData[i] = uint8_t(sub.blockFill);
-						blockData[i + 1] = uint8_t(sub.blockFill);
-					}
+						for (int y = sy0; y < sy1; y += 2, i += 2, li += SUB_CHUNK_SIZE * SUB_CHUNK_SIZE * 2) {
+							const int li1 = li + SUB_CHUNK_SIZE * SUB_CHUNK_SIZE;
+							blockData[i] = blockLayer ? uint8_t(blockLayer->types[size_t(li)]) : uint8_t(sub.blockFill);
+							blockData[i + 1] =
+							    blockLayer ? uint8_t(blockLayer->types[size_t(li1)]) : uint8_t(sub.blockFill);
 
-					if (metaLayer) {
-						metaData[i >> 1] = uint8_t((metaLayer->Get(idx0) & 0x0F) |
-						                           ((metaLayer->Get(idx1) & 0x0F) << 4));
-					} else if (sub.metaFill != 0) {
-						metaData[i >> 1] = uint8_t(sub.metaFill | (sub.metaFill << 4));
-					}
+							if (metaLayer) {
+								metaData[i >> 1] = uint8_t((metaLayer->Get(li) & 0x0F) |
+								                           ((metaLayer->Get(li1) & 0x0F) << 4));
+							} else {
+								metaData[i >> 1] = uint8_t(sub.metaFill | (sub.metaFill << 4));
+							}
 
-					if (blockLightLayer) {
-						blockLight[i >> 1] = uint8_t((blockLightLayer->Get(idx0) & 0x0F) |
-						                             ((blockLightLayer->Get(idx1) & 0x0F) << 4));
-					} else {
-						blockLight[i >> 1] = uint8_t(sub.blockLightFill | (sub.blockLightFill << 4));
-					}
+							if (blockLightLayer) {
+								blockLight[i >> 1] = uint8_t((blockLightLayer->Get(li) & 0x0F) |
+								                             ((blockLightLayer->Get(li1) & 0x0F) << 4));
+							} else {
+								blockLight[i >> 1] = uint8_t(sub.blockLightFill | (sub.blockLightFill << 4));
+							}
 
-					if (skyLightLayer) {
-						skyLight[i >> 1] = uint8_t((skyLightLayer->Get(idx0) & 0x0F) |
-						                           ((skyLightLayer->Get(idx1) & 0x0F) << 4));
-					} else {
-						skyLight[i >> 1] = uint8_t(sub.skyLightFill | (sub.skyLightFill << 4));
+							if (skyLightLayer) {
+								skyLight[i >> 1] = uint8_t((skyLightLayer->Get(li) & 0x0F) |
+							                           ((skyLightLayer->Get(li1) & 0x0F) << 4));
+							} else {
+								skyLight[i >> 1] = uint8_t(sub.skyLightFill | (sub.skyLightFill << 4));
+							}
+						}
 					}
-
-					i += 2;
 				}
 			}
 		}
