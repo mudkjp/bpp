@@ -69,9 +69,17 @@ bool Region::AddChunk(std::shared_ptr<Chunk> _chunk, int64_t _timestamp,
 	}
 
 	// Find a free run of sectors in the file
-	// Build an occupancy set from the header
+	// Build an occupancy set from the header. The slot we're replacing is
+	// deliberately left out so its old sectors immediately become reusable;
+	// otherwise every save of the same chunk appends a new copy and the
+	// region file (plus the search for free space) grows without bound.
+	Int2 local{ _chunk->cpos.x & 31, _chunk->cpos.z & 31 };
+	int index = local.x + local.z * 32;
+
 	std::vector<bool> occupied;
 	for (int i = 0; i < 1024; i++) {
+		if (i == index)
+			continue;
 		if (regionHeader[i].offset == 0)
 			continue;
 		uint32_t end = regionHeader[i].offset + regionHeader[i].numberOfSectors;
@@ -145,9 +153,6 @@ bool Region::AddChunk(std::shared_ptr<Chunk> _chunk, int64_t _timestamp,
 	}
 
 	// Write updated header entry to file
-	Int2 local{ _chunk->cpos.x & 31, _chunk->cpos.z & 31 };
-	int index = local.x + local.z * 32;
-
 	file.seekp(index * 4);
 	uint32_t entry = (chosenOffset << 8) | uint8_t(sectorsNeeded);
 	entry = ToBigEndian(entry);
@@ -309,18 +314,26 @@ std::vector<uint8_t> Region::EncodeNbtData(const std::shared_ptr<Chunk>& _chunk,
 					const SubChunk::NibbleLayer* sl = sub.skyLight.get();
 					const int8_t blockFill = int8_t(sub.blockFill);
 					const uint8_t mf = sub.metaFill, blf = sub.blockLightFill, sf = sub.skyLightFill;
-					for (int ly = 0; ly < SUB_CHUNK_SIZE; ly++) {
-						const int y = s * SUB_CHUNK_SIZE + ly;
+					const int baseY = s * SUB_CHUNK_SIZE;
+					for (int ly = 0; ly < SUB_CHUNK_SIZE; ly += 2) {
+						const int y = baseY + ly;
 						const size_t idx = size_t(y + (z * CHUNK_HEIGHT) + (x * CHUNK_HEIGHT * CHUNK_WIDTH));
 						const int li = SubChunk::LocalIndex({ x, y, z });
+						const int liNext = li + SUB_CHUNK_SIZE * SUB_CHUNK_SIZE;
+
 						blocksOut[idx] = bl ? int8_t(bl->types[size_t(li)]) : blockFill;
-						const uint8_t meta = ml ? ml->Get(li) : mf;
-						const uint8_t skyLight = sl ? sl->Get(li) : sf;
-						const uint8_t blockLight = bll ? bll->Get(li) : blf;
-						const uint8_t shift = (y & 1) ? 4u : 0u;
-						dataOut[idx / 2] = int8_t(dataOut[idx / 2] | (meta << shift));
-						skyLightOut[idx / 2] = int8_t(skyLightOut[idx / 2] | (skyLight << shift));
-						blockLightOut[idx / 2] = int8_t(blockLightOut[idx / 2] | (blockLight << shift));
+						blocksOut[idx + 1] = bl ? int8_t(bl->types[size_t(liNext)]) : blockFill;
+
+						const uint8_t meta0 = ml ? ml->Get(li) : mf;
+						const uint8_t meta1 = ml ? ml->Get(liNext) : mf;
+						const uint8_t sky0 = sl ? sl->Get(li) : sf;
+						const uint8_t sky1 = sl ? sl->Get(liNext) : sf;
+						const uint8_t light0 = bll ? bll->Get(li) : blf;
+						const uint8_t light1 = bll ? bll->Get(liNext) : blf;
+
+						dataOut[idx / 2] = int8_t(meta0 | (meta1 << 4));
+						skyLightOut[idx / 2] = int8_t(sky0 | (sky1 << 4));
+						blockLightOut[idx / 2] = int8_t(light0 | (light1 << 4));
 					}
 				}
 			}
@@ -421,26 +434,40 @@ std::shared_ptr<Chunk> Region::DecodeDecompressedNbtData(std::vector<uint8_t>& _
 	const int8_t* const blightIn = blockLight.data();
 	const int8_t* const skyIn = skyLight.data();
 	bool any = false;
-	for (int y = 0; y < CHUNK_HEIGHT; y++) {
-		SubChunk& sub = chunk->subChunks[size_t(y >> 4)];
-		const unsigned shift = (y & 1) ? 4u : 0u;
-		for (int x = 0; x < CHUNK_WIDTH; x++) {
-			for (int z = 0; z < CHUNK_WIDTH; z++) {
-				size_t idx = size_t(y + (z * CHUNK_HEIGHT) + (x * CHUNK_HEIGHT * CHUNK_WIDTH));
-				// Make sure this block is valid
-				BlockType thisBlock = BlockType(blocksIn[idx]);
-				if (!Items::IsBlock(thisBlock))
-					continue;
-				any = true;
-				const int li = SubChunk::LocalIndex({ x, y, z });
-				sub.SetBlock(li, thisBlock);
-				sub.SetMeta(li, uint8_t((uint8_t(dataIn[idx / 2]) >> shift) & 0xF));
-				sub.SetBlockLight(li, uint8_t((uint8_t(blightIn[idx / 2]) >> shift) & 0xF));
-				sub.SetSkyLight(li, uint8_t((uint8_t(skyIn[idx / 2]) >> shift) & 0xF));
+	for (int s = 0; s < SUB_CHUNK_COUNT; s++) {
+		SubChunk& sub = chunk->subChunks[size_t(s)];
+		for (int ly = 0; ly < SUB_CHUNK_SIZE; ly += 2) {
+			const int y = s * SUB_CHUNK_SIZE + ly;
+			for (int x = 0; x < CHUNK_WIDTH; x++) {
+				for (int z = 0; z < CHUNK_WIDTH; z++) {
+					const size_t idx = size_t(y + (z * CHUNK_HEIGHT) + (x * CHUNK_HEIGHT * CHUNK_WIDTH));
+					const int li = SubChunk::LocalIndex({ x, y, z });
+					const int liNext = li + SUB_CHUNK_SIZE * SUB_CHUNK_SIZE;
+					const uint8_t packedMeta = uint8_t(dataIn[idx / 2]);
+					const uint8_t packedBlockLight = uint8_t(blightIn[idx / 2]);
+					const uint8_t packedSkyLight = uint8_t(skyIn[idx / 2]);
+
+					const BlockType block0 = BlockType(blocksIn[idx]);
+					if (Items::IsBlock(block0)) {
+						any = true;
+						sub.SetBlock(li, block0);
+						sub.SetMeta(li, packedMeta & 0x0F);
+						sub.SetBlockLight(li, packedBlockLight & 0x0F);
+						sub.SetSkyLight(li, packedSkyLight & 0x0F);
+					}
+
+					const BlockType block1 = BlockType(blocksIn[idx + 1]);
+					if (Items::IsBlock(block1)) {
+						any = true;
+						sub.SetBlock(liNext, block1);
+						sub.SetMeta(liNext, packedMeta >> 4);
+						sub.SetBlockLight(liNext, packedBlockLight >> 4);
+						sub.SetSkyLight(liNext, packedSkyLight >> 4);
+					}
+				}
 			}
 		}
-		if ((y & (SUB_CHUNK_SIZE - 1)) == SUB_CHUNK_SIZE - 1)
-			chunk->TryToCompactSubChunk(y / SUB_CHUNK_SIZE);
+		chunk->TryToCompactSubChunk(s);
 	}
 	if (any)
 		chunk->isModified = true;
