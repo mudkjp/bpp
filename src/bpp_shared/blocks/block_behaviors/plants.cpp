@@ -492,9 +492,9 @@ void RegisterPlantBehaviors() {
 	};
 	blockBehaviors[BLOCK_LEAVES].onBlockDestroyedByPlayer = [](WorldManager& _world, Int3 _pos, Entity& _destroyer) {
 		// Leaves drop themselves instead of their random loot table when broken with shears
-		PlayerEntity* pe = dynamic_cast<PlayerEntity*>(&_destroyer);
-		if (!pe)
+		if (_destroyer.type != EntityType::PLAYER)
 			return;
+		PlayerEntity* pe = static_cast<PlayerEntity*>(&_destroyer);
 
 		auto heldItem = pe->GetHeldItem();
 		if (heldItem && heldItem->id == Items::Id::SHEARS) {

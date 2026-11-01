@@ -211,7 +211,7 @@ void EntityTracker::SpawnEntityForPlayer(EntityId _playerId, TrackedEntry& _enti
 		return;
 	switch (_entityEntry.entity->type) {
 	case EntityType::ITEM: {
-		ItemEntity& ie = dynamic_cast<ItemEntity&>(*_entityEntry.entity);
+		ItemEntity& ie = static_cast<ItemEntity&>(*_entityEntry.entity);
 		Packet::SpawnItem pkt;
 		pkt.entityId = _entityEntry.entity->id;
 		pkt.item = ie.itemStack;
@@ -432,10 +432,7 @@ void EntityTracker::SpawnEntityForPlayer(EntityId _playerId, TrackedEntry& _enti
 		break;
 	}
 	case EntityType::PAINTING: {
-		PaintingEntity* painting = dynamic_cast<PaintingEntity*>(_entityEntry.entity);
-		if (!painting)
-			break;
-
+		PaintingEntity* painting = static_cast<PaintingEntity*>(_entityEntry.entity);
 		Packet::SpawnPainting pkt;
 		pkt.title = painting->art.title;
 		pkt.entityId = painting->id;
@@ -471,7 +468,7 @@ void EntityTracker::SpawnEntityForPlayer(EntityId _playerId, TrackedEntry& _enti
 		break;
 	}
 	case EntityType::FISHING_BOBBER: {
-		auto* bobber = dynamic_cast<FishingBobberEntity*>(_entityEntry.entity);
+		auto* bobber = static_cast<FishingBobberEntity*>(_entityEntry.entity);
 		auto owner = bobber ? bobber->owner.lock() : nullptr;
 
 		if (!owner || owner->isDead)
@@ -490,7 +487,7 @@ void EntityTracker::SpawnEntityForPlayer(EntityId _playerId, TrackedEntry& _enti
 		break;
 	}
 	case EntityType::ARROW: {
-		auto* arrow = dynamic_cast<ArrowEntity*>(_entityEntry.entity);
+		auto* arrow = static_cast<ArrowEntity*>(_entityEntry.entity);
 		auto owner = arrow ? arrow->GetOwner() : nullptr;
 		Packet::SpawnObject pkt;
 		pkt.entityId = _entityEntry.entity->id;
@@ -503,7 +500,7 @@ void EntityTracker::SpawnEntityForPlayer(EntityId _playerId, TrackedEntry& _enti
 		break;
 	}
 	case EntityType::THROWN_EGG: {
-		auto* egg = dynamic_cast<EggEntity*>(_entityEntry.entity);
+		auto* egg = static_cast<EggEntity*>(_entityEntry.entity);
 		auto owner = egg ? egg->GetOwner() : nullptr;
 		Packet::SpawnObject pkt;
 		pkt.entityId = _entityEntry.entity->id;
@@ -515,7 +512,7 @@ void EntityTracker::SpawnEntityForPlayer(EntityId _playerId, TrackedEntry& _enti
 		break;
 	}
 	case EntityType::THROWN_SNOWBALL: {
-		auto* snowball = dynamic_cast<SnowballEntity*>(_entityEntry.entity);
+		auto* snowball = static_cast<SnowballEntity*>(_entityEntry.entity);
 		auto owner = snowball ? snowball->GetOwner() : nullptr;
 		Packet::SpawnObject pkt;
 		pkt.entityId = _entityEntry.entity->id;
