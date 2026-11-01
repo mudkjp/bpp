@@ -48,7 +48,7 @@ public:
 	virtual void Tick() override;
 	virtual void OnDeath(Entity* _killer, DamageType _type);
 	virtual void SetGoal(std::optional<Int3> _goal);
-	virtual bool onLadder();
+	virtual bool OnLadder();
 	virtual void UpdateAIState() {}
 	virtual void Move(Vec3& _velocity) override;
 	virtual ItemStack* GetHeldItem();

@@ -272,7 +272,7 @@ void EntityMPPlayer::HandlePositionChecks() {
 
 		// Simulate our own fall distance / on ground
 		// Anti cheat is fun :p
-		if (inWater || onGround || onLadder()) {
+		if (inWater || onGround || OnLadder()) {
 			simulatedFallDistance = 0;
 		} else if (delta.y < 0) {
 			simulatedFallDistance -= delta.y;
@@ -500,7 +500,7 @@ void EntityMPPlayer::Tick() {
 	// Do living entity stuff
 	PlayerEntity::Tick();
 
-	if (onLadder())
+	if (OnLadder())
 		// No fall damage on ladders
 		fallDistance = 0.0f;
 

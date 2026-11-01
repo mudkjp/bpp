@@ -16,7 +16,7 @@ void SpiderEntity::OnDeath(Entity* /*_killer*/, DamageType /*_type*/) {
 	}
 }
 
-bool SpiderEntity::onLadder() {
+bool SpiderEntity::OnLadder() {
 	// Spiders climb on walls
 	return this->collidedHorizontally;
 }
