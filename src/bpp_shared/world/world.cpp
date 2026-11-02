@@ -619,6 +619,7 @@ void WorldManager::Shutdown() {
 			auto c = std::make_shared<Chunk>();
 			c->cpos = cpos;
 			chunks.emplace(cpos, std::move(c));
+			TrackUnloadedChunk(cpos);
 		}
 
 		// Wait until the chunk is ready
@@ -694,8 +695,10 @@ void WorldManager::DrainLoadQueue() {
 		auto it = chunks.find(pos);
 		if (it == chunks.end())
 			continue;
-		if (it->second->state.load(std::memory_order_acquire) == ChunkState::Loading)
+		if (it->second->state.load(std::memory_order_acquire) == ChunkState::Loading) {
 			it->second->state.store(ChunkState::Unloaded, std::memory_order_release);
+			TrackUnloadedChunk(pos);
+		}
 	}
 
 	for (auto& [pos, chunk] : chunks) {
@@ -803,6 +806,14 @@ void WorldManager::SeedChunkLighting(Int32_2 _pos) {
 	PropagateChunkLightBorders(_pos);
 }
 
+void WorldManager::RebuildUnloadedCandidates() {
+	unloadedChunkIndex.clear();
+	for (const auto& [pos, chunk] : chunks) {
+		if (chunk && chunk->state.load(std::memory_order_acquire) == ChunkState::Unloaded)
+			TrackUnloadedChunk(pos);
+	}
+}
+
 void WorldManager::UpdateLoadRadius(const std::vector<ClientPosition>& _players) {
 	// A stationary player has the same chunk-interest set every tick. Rebuilding
 	// it allocates and hashes the whole view square for no benefit.
@@ -847,6 +858,7 @@ void WorldManager::UpdateLoadRadius(const std::vector<ClientPosition>& _players)
 			auto c = std::make_shared<Chunk>();
 			c->cpos = pos;
 			chunks.emplace(pos, std::move(c));
+			TrackUnloadedChunk(pos);
 		}
 	}
 
@@ -867,6 +879,7 @@ void WorldManager::UpdateLoadRadius(const std::vector<ClientPosition>& _players)
 				regionManager->DiscardChunk(it->first);
 			entityManager.PruneEmptyContainer(it->first);
 			InvalidateChunkCache();
+			unloadedChunkIndex.erase({ it->first.x, it->first.z });
 			it = chunks.erase(it);
 			continue;
 		}
@@ -879,6 +892,7 @@ void WorldManager::UpdateLoadRadius(const std::vector<ClientPosition>& _players)
 
 		entityManager.EraseContainer(it->first);
 		InvalidateChunkCache();
+		unloadedChunkIndex.erase({ it->first.x, it->first.z });
 		it = chunks.erase(it);
 	}
 }
@@ -887,18 +901,12 @@ void WorldManager::PumpPipeline(const std::vector<ClientPosition>& _players) {
 	const int playerCount = int(_players.size());
 	const int slicePerPlayer = 16;
 
+	// The index is maintained sorted by (x, z), so this is a copy rather than
+	// a full chunk-map scan plus sort every tick.
 	std::vector<Int32_2> unloadedCandidates;
-	unloadedCandidates.reserve(chunks.size());
-	for (auto& [pos, chunk] : chunks) {
-		if (chunk->state.load(std::memory_order_acquire) == ChunkState::Unloaded)
-			unloadedCandidates.push_back(pos);
-	}
-	// Sort by load order that beta 1.7.3 seems to use
-	std::sort(unloadedCandidates.begin(), unloadedCandidates.end(), [](const Int32_2& _a, const Int32_2& _b) {
-		if (_a.x != _b.x)
-			return _a.x < _b.x;
-		return _a.z < _b.z;
-	});
+	unloadedCandidates.reserve(unloadedChunkIndex.size());
+	for (const auto& [x, z] : unloadedChunkIndex)
+		unloadedCandidates.push_back({ x, z });
 
 	std::unordered_set<Int32_2> startedThisTick;
 
@@ -906,11 +914,16 @@ void WorldManager::PumpPipeline(const std::vector<ClientPosition>& _players) {
 		if (startedThisTick.contains(_pos))
 			return false;
 		auto it = chunks.find(_pos);
-		if (it == chunks.end())
+		if (it == chunks.end()) {
+			unloadedChunkIndex.erase({ _pos.x, _pos.z });
 			return false;
-		if (it->second->state.load(std::memory_order_acquire) != ChunkState::Unloaded)
+		}
+		if (it->second->state.load(std::memory_order_acquire) != ChunkState::Unloaded) {
+			unloadedChunkIndex.erase({ _pos.x, _pos.z });
 			return false;
+		}
 		it->second->state.store(ChunkState::Loading, std::memory_order_release);
+		unloadedChunkIndex.erase({ _pos.x, _pos.z });
 		regionManager->LoadChunk(_pos);
 		startedThisTick.insert(_pos);
 		return true;
@@ -921,13 +934,18 @@ void WorldManager::PumpPipeline(const std::vector<ClientPosition>& _players) {
 		if (startedThisTick.contains(_pos))
 			return false;
 		auto it = chunks.find(_pos);
-		if (it == chunks.end())
+		if (it == chunks.end()) {
+			unloadedChunkIndex.erase({ _pos.x, _pos.z });
 			return false;
-		if (it->second->state.load(std::memory_order_acquire) != ChunkState::Unloaded)
+		}
+		if (it->second->state.load(std::memory_order_acquire) != ChunkState::Unloaded) {
+			unloadedChunkIndex.erase({ _pos.x, _pos.z });
 			return false;
+		}
 
 		// Actually generate this chunk
 		it->second->state.store(ChunkState::Generating, std::memory_order_release);
+		unloadedChunkIndex.erase({ _pos.x, _pos.z });
 		pool.detach_task([_pos, this]() {
 			// We make a new chunk here instead of modifying the existing chunk because multithreading is a pain
 			// The placeholder chunk in the map will be replaced by this one when we push to genDoneQueue
@@ -1408,6 +1426,7 @@ void WorldManager::InitSpawn() {
 			auto chunk = std::make_shared<Chunk>();
 			chunk->cpos = pos;
 			chunks[pos] = std::move(chunk);
+			TrackUnloadedChunk(pos);
 			while (GetFirstUncoveredBlock(_x, _z) == BlockType::BLOCK_INVALID) {
 				this->PumpPipeline({});
 				this->DrainGenQueue();
@@ -1430,6 +1449,7 @@ void WorldManager::InitSpawn() {
 	}
 	this->spawnPoint = { sx, 64, sz };
 	chunks.clear(); // Clear all chunks so we can start fresh from the spawn area
+	unloadedChunkIndex.clear();
 	InvalidateChunkInterest();
 	InvalidateChunkCache();
 }

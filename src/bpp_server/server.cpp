@@ -471,6 +471,9 @@ void Server::Startup() {
 			}
 		}
 
+		gameRuntime.world.RebuildUnloadedCandidates();
+		gameRuntime.worldHell.RebuildUnloadedCandidates();
+
 		// Chunks are ready to load at this point.
 		auto loadSpawnChunks = [totalSpawnChunks, spawnChunkDistance](WorldManager& _world) {
 			auto start = std::chrono::steady_clock::now();

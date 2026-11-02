@@ -37,7 +37,9 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include "gamerules.h"
 
@@ -66,6 +68,9 @@ private:
 	std::vector<Int32_2> cachedPlayerChunks;
 	std::vector<int> cachedViewDistances;
 	bool chunkInterestCacheValid = false;
+	// Sorted index of chunks whose state is Unloaded. Maintained incrementally
+	// so PumpPipeline does not scan and sort the whole chunk map every tick.
+	std::set<std::pair<int, int>> unloadedChunkIndex;
 	std::unordered_map<Int32_2, std::vector<std::pair<Int3, Block>>> pendingBleedWrites;
 	std::mutex genDoneMutex;
 	std::deque<std::shared_ptr<Chunk>> genDoneQueue;
@@ -392,6 +397,18 @@ public:
 
 	void InvalidateChunkInterest() {
 		chunkInterestCacheValid = false;
+	}
+
+	// Rebuilds the sorted unloaded-chunk index after an external chunk-map
+	// replacement/clear (startup, utilities, tests).
+	void RebuildUnloadedCandidates();
+
+	size_t PendingLoadCount() const {
+		return unloadedChunkIndex.size();
+	}
+
+	void TrackUnloadedChunk(Int32_2 _pos) {
+		unloadedChunkIndex.emplace(_pos.x, _pos.z);
 	}
 
 	Chunk* GetChunkRaw(Int32_2 _pos) {
