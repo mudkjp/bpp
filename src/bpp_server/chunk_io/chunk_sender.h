@@ -10,6 +10,7 @@
 #include "../player_conn/player_session.h"
 #include "BS_thread_pool.hpp"
 #include "chunk_serializer.h"
+#include "helpers/hash.h"
 #include "networking/packets.h"
 #include "tile_entities/tile_entity.h"
 #include "world/world.h"
@@ -19,6 +20,31 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+// Identifies one compressed block-update sub-region. Multiple viewers of the
+// same chunk receive the same bbox and changes, so they can share one job.
+struct SubRegionKey {
+	Int32_2 chunk;
+	int32_t xmin, xmax, ymin, ymax, zmin, zmax;
+	size_t changesHash;
+
+	bool operator==(const SubRegionKey&) const = default;
+};
+
+struct SubRegionKeyHasher {
+	size_t operator()(const SubRegionKey& _key) const noexcept {
+		size_t h = 0;
+		HashCombine(h, _key.chunk);
+		HashCombine(h, _key.xmin);
+		HashCombine(h, _key.xmax);
+		HashCombine(h, _key.ymin);
+		HashCombine(h, _key.ymax);
+		HashCombine(h, _key.zmin);
+		HashCombine(h, _key.zmax);
+		HashCombine(h, _key.changesHash);
+		return h;
+	}
+};
 
 // ChunkSender offloads zlib chunk serialization onto a thread-pool
 struct ChunkSender {
@@ -33,7 +59,7 @@ struct ChunkSender {
 	struct PendingSubRegion {
 		Int32_2 chunkPos;
 		Packet::ChunkData header; // pre-filled, compressedData empty until ready
-		std::future<std::vector<uint8_t>> data;
+		std::shared_future<std::vector<uint8_t>> data;
 	};
 
 	// Per-session queue of in-flight full-chunk serialization jobs.
@@ -47,9 +73,12 @@ struct ChunkSender {
 
 	// reuse chunk packets across clients for 1 tick.
 	std::unordered_map<const Chunk*, std::shared_future<Packet::ChunkData>> tickPackets;
+	// Reuse sub-region compression across all viewers for one tick.
+	std::unordered_map<SubRegionKey, std::shared_future<std::vector<uint8_t>>, SubRegionKeyHasher> tickSubRegions;
 
 	void BeginTick() {
 		tickPackets.clear();
+		tickSubRegions.clear();
 	}
 
 	size_t Enqueue(PlayerSession& _session, WorldManager& _world, int _batchSize = -1) {
@@ -168,6 +197,15 @@ struct ChunkSender {
 		ymin = std::max<int>(ymin, 0);
 		ymax = std::min<int>(ymax, CHUNK_HEIGHT - 1);
 
+		size_t changesHash = 0;
+		for (const auto& pb : _changes) {
+			HashCombine(changesHash, pb.blockPos.x);
+			HashCombine(changesHash, pb.blockPos.y);
+			HashCombine(changesHash, pb.blockPos.z);
+			HashCombine(changesHash, pb.block.type);
+			HashCombine(changesHash, pb.block.data);
+		}
+
 		PendingSubRegion psr;
 		psr.chunkPos = _chunk;
 		psr.header.pos.x = _chunk.x * CHUNK_WIDTH + xmin;
@@ -177,10 +215,15 @@ struct ChunkSender {
 		psr.header.size.y = static_cast<uint8_t>(ymax - ymin);
 		psr.header.size.z = static_cast<uint8_t>(zmax - zmin);
 		if (_chunkRef) {
-			std::shared_ptr<const Chunk> ref = _chunkRef;
-			psr.data = pool.submit_task([ref, xmin, xmax, ymin, ymax, zmin, zmax]() {
-				return ChunkSerializer::Serialize(*ref, xmin, xmax + 1, ymin, ymax + 1, zmin, zmax + 1);
-			});
+			const SubRegionKey key{ _chunk, xmin, xmax, ymin, ymax, zmin, zmax, changesHash };
+			auto [job, inserted] = tickSubRegions.try_emplace(key);
+			if (inserted) {
+				std::shared_ptr<const Chunk> ref = _chunkRef;
+				job->second = pool.submit_task([ref, xmin, xmax, ymin, ymax, zmin, zmax]() {
+					return ChunkSerializer::Serialize(*ref, xmin, xmax + 1, ymin, ymax + 1, zmin, zmax + 1);
+				}).share();
+			}
+			psr.data = job->second;
 		}
 		subRegionFlight[&_session].push_back(std::move(psr));
 	}
