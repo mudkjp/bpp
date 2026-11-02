@@ -959,6 +959,43 @@ void TestChunkSenderStationaryScan() {
 	CHECK_EQ(sender.radiusLookups, afterFirst);
 }
 
+void TestTrackerSpawnPassCaching() {
+	EntityTracker tracker;
+	Entity playerEntity;
+	playerEntity.id = 1;
+	playerEntity.type = EntityType::PLAYER;
+	playerEntity.position = { 0.0, 0.0, 0.0 };
+
+	Entity trackedEntity;
+	trackedEntity.id = 2;
+	trackedEntity.type = EntityType::PIG;
+	trackedEntity.position = { 1.0, 0.0, 0.0 };
+
+	TrackedEntry playerEntry;
+	playerEntry.entity = &playerEntity;
+	playerEntry.profile.updateFrequency = INT_MAX;
+	playerEntry.lastSpawnCheckPosition = playerEntity.position;
+
+	TrackedEntry entityEntry;
+	entityEntry.entity = &trackedEntity;
+	entityEntry.profile.updateFrequency = INT_MAX;
+	entityEntry.profile.range = 64;
+	entityEntry.visibleTo.insert(playerEntity.id);
+	entityEntry.lastSpawnCheckPosition = trackedEntity.position;
+
+	tracker.trackedEntities[playerEntity.id] = playerEntry;
+	tracker.trackedEntities[trackedEntity.id] = entityEntry;
+	tracker.playerIds.insert(playerEntity.id);
+	tracker.spawnStateDirty = false;
+
+	tracker.Tick();
+	CHECK_EQ(tracker.spawnPairChecks, size_t(0));
+
+	playerEntity.position.x += 1.0;
+	tracker.Tick();
+	CHECK_EQ(tracker.spawnPairChecks, size_t(1));
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1096,6 +1133,7 @@ std::vector<TestCase> Tests() {
 		{ "entity_index", TestEntityIndex },
 		{ "equipment_dirty_gating", TestEquipmentDirtyGating },
 		{ "tracker_update_operations", TestTrackerUpdateOperations },
+		{ "tracker_spawn_pass_cache", TestTrackerSpawnPassCaching },
 		{ "block_lookup_tables", TestBlockLookupTables },
 		{ "subregion_dedup", TestSubRegionDedup },
 		{ "chunk_sender_stationary_scan", TestChunkSenderStationaryScan },
@@ -1236,6 +1274,57 @@ void RunBenchmarks() {
 		auto path = pathfinder.FindPath({ 2, 4, 2 }, { 13, 4, 13 }, 0.6f, 1.8f, 20.0f);
 		return path.size();
 	});
+
+	EntityTracker benchTracker;
+	std::vector<std::unique_ptr<Entity>> trackerEntities;
+	auto trackerPlayer = std::make_unique<Entity>();
+	trackerPlayer->id = 1;
+	trackerPlayer->type = EntityType::PLAYER;
+	trackerPlayer->position = { 0.0, 64.0, 0.0 };
+	TrackedEntry trackerPlayerEntry;
+	trackerPlayerEntry.entity = trackerPlayer.get();
+	trackerPlayerEntry.profile.updateFrequency = INT_MAX;
+	trackerPlayerEntry.lastSpawnCheckPosition = trackerPlayer->position;
+	benchTracker.trackedEntities[trackerPlayer->id] = trackerPlayerEntry;
+	benchTracker.playerIds.insert(trackerPlayer->id);
+	for (int i = 0; i < 100; ++i) {
+		auto entity = std::make_unique<Entity>();
+		entity->id = EntityId(100 + i);
+		entity->type = EntityType::PIG;
+		entity->position = { double(i % 10), 64.0, double(i / 10) };
+		TrackedEntry entry;
+		entry.entity = entity.get();
+		entry.profile.updateFrequency = INT_MAX;
+		entry.profile.range = 64;
+		entry.visibleTo.insert(trackerPlayer->id);
+		entry.lastSpawnCheckPosition = entity->position;
+		benchTracker.trackedEntities[entity->id] = entry;
+		trackerEntities.push_back(std::move(entity));
+	}
+	benchTracker.spawnStateDirty = false;
+	Bench("tracker_stationary_pair_checks", 0, [&] {
+		const size_t before = benchTracker.spawnPairChecks;
+		benchTracker.Tick();
+		return benchTracker.spawnPairChecks - before;
+	});
+	int trackerMove = 0;
+	Bench("tracker_moving_pair_checks", 0, [&] {
+		trackerPlayer->position.x = (trackerMove++ & 1) ? 1.0 : 0.0;
+		const size_t before = benchTracker.spawnPairChecks;
+		benchTracker.Tick();
+		return benchTracker.spawnPairChecks - before;
+	});
+
+	trackerPlayer->position.x = 0.0;
+	benchTracker.Tick();
+	size_t pairBefore = benchTracker.spawnPairChecks;
+	benchTracker.Tick();
+	const size_t stationaryPairs = benchTracker.spawnPairChecks - pairBefore;
+	trackerPlayer->position.x = 1.0;
+	pairBefore = benchTracker.spawnPairChecks;
+	benchTracker.Tick();
+	const size_t movingPairs = benchTracker.spawnPairChecks - pairBefore;
+	std::cout << std::format("BENCH tracker_pair_checks  stationary={} moving={}\n", stationaryPairs, movingPairs);
 
 	WorldManager interestWorld;
 	std::vector<ClientPosition> interestPlayers(4);
