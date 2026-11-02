@@ -100,4 +100,9 @@ void RegisterBlockBehaviors();
 std::vector<ItemStack> GetBlockDrops(BlockType _blockId, uint8_t _meta, Java::Random& _rng);
 
 extern BlockBehavior blockBehaviors[BLOCK_MAX];
+
+// Compact per-block dispatch tables for the hottest callbacks.
+extern void (*onTickTable[BLOCK_MAX])(WorldManager& _world, Int3 _pos, uint8_t _meta, Java::Random& _random);
+extern CollisionShape (*colliderTable[BLOCK_MAX])(uint8_t _metadata);
+
 }; // namespace Blocks

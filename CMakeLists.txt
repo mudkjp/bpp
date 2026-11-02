@@ -724,6 +724,7 @@ if(BPP_BUILD_TESTS)
     endif()
     add_executable(bpp_tests
         tests/test_main.cpp
+        src/bpp_server/trackers/entity_tracker.cpp
         ${SHARED_SOURCES}
         ${PLATFORM_SOURCES}
     )

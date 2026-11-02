@@ -339,14 +339,14 @@ std::vector<AABB> WorldManager::GetCollidingBoundingBoxes(const AABB& _area, Ent
 				// Most blocks use the plain unit-cube collider. Handle that
 				// directly instead of allocating a CollisionShape and an
 				// offset copy for every solid voxel touched by the sweep.
-				if (Blocks::blockBehaviors[blockId].getCollider == Blocks::DefaultCollider) {
+				if (Blocks::colliderTable[blockId] == Blocks::DefaultCollider) {
 					const AABB box{ double(x), double(y), double(z), double(x + 1), double(y + 1), double(z + 1) };
 					if (box.Intersects(_area))
 						collidingBoxes.push_back(box);
 					continue;
 				}
 
-				const CollisionShape& collider = Blocks::blockBehaviors[blockId].getCollider(blockMeta);
+				const CollisionShape& collider = Blocks::colliderTable[blockId](blockMeta);
 				for (const auto& box : collider.boxes) {
 					const AABB offset = box.Offset(x, y, z);
 					if (offset.Intersects(_area))
@@ -537,7 +537,7 @@ void WorldManager::PerformRandomTicks(const std::vector<ClientPosition>& _player
 			auto block = chunk->GetBlock({ posX, posY, posZ });
 			if (!Blocks::ticksOnLoadTable[block])
 				continue;
-			if (auto func = Blocks::blockBehaviors[block].onTick) {
+			if (auto func = Blocks::onTickTable[block]) {
 				Int3 worldPos = { chunkOrigin.x + posX, posY, chunkOrigin.z + posZ };
 				func(*this, worldPos, chunk->GetMeta({ posX, posY, posZ }), this->rand);
 			}
