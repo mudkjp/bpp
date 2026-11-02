@@ -1161,6 +1161,35 @@ void TestEntityBucketMigration() {
 		CHECK_EQ(entity->bucketPos.x, 1);
 }
 
+void TestCollisionShapeStorage() {
+	CollisionShape shape;
+	shape.Add({ 0.0, 0.0, 0.0, 0.5, 0.5, 0.5 });
+	shape.Add({ 0.5, 0.5, 0.5, 1.0, 1.0, 1.0 });
+	CHECK_EQ(shape.boxes.size(), size_t(2));
+	CHECK(shape.boxes.overflow.empty());
+	CHECK_EQ(shape.boxes[0].maxX, 0.5);
+	CHECK_EQ(shape.boxes[1].minX, 0.5);
+
+	auto offset = shape.Offset(1.0, 2.0, 3.0);
+	CHECK_EQ(offset.boxes.size(), size_t(2));
+	CHECK_EQ(offset.boxes[0].minX, 1.0);
+	CHECK_EQ(offset.boxes[0].minY, 2.0);
+	CHECK_EQ(offset.boxes[0].minZ, 3.0);
+	CHECK(offset.boxes.overflow.empty());
+
+	auto bounds = offset.GetBounds();
+	CHECK(bounds.has_value());
+	if (bounds) {
+		CHECK_EQ(bounds->minX, 1.0);
+		CHECK_EQ(bounds->maxX, 2.0);
+	}
+
+	shape.Add({ 2.0, 2.0, 2.0, 3.0, 3.0, 3.0 });
+	CHECK_EQ(shape.boxes.size(), size_t(3));
+	CHECK_EQ(shape.boxes.overflow.size(), size_t(1));
+	CHECK_EQ(shape.boxes[2].minX, 2.0);
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1295,6 +1324,7 @@ std::vector<TestCase> Tests() {
 		{ "populate_frontier", TestPopulateFrontier },
 		{ "chunk_light_emitters", TestChunkLightEmitters },
 		{ "collision_fast_path", TestCollisionFastPath },
+		{ "collision_shape_storage", TestCollisionShapeStorage },
 		{ "entity_index", TestEntityIndex },
 		{ "entity_aabb_queries", TestEntityAabbQueries },
 		{ "entity_tick_scratch", TestEntityTickScratch },
@@ -1534,6 +1564,21 @@ void RunBenchmarks() {
 	benchTracker.Tick();
 	const size_t movingPairs = benchTracker.spawnPairChecks - pairBefore;
 	std::cout << std::format("BENCH tracker_pair_checks  stationary={} moving={}\n", stationaryPairs, movingPairs);
+
+	WorldManager collisionWorld;
+	auto collisionChunk = std::make_shared<Chunk>();
+	collisionChunk->cpos = { 0, 0 };
+	collisionChunk->state.store(ChunkState::Generated);
+	collisionChunk->FillSlices(0, 63, BLOCK_STONE);
+	for (int x = 0; x < CHUNK_WIDTH; ++x)
+		for (int z = 0; z < CHUNK_WIDTH; ++z)
+			collisionChunk->SetBlockRaw({ x, 64, z }, BLOCK_STAIRS_WOOD);
+	collisionWorld.chunks[Int32_2{ 0, 0 }] = collisionChunk;
+	const AABB collisionArea{ 0.0, 63.0, 0.0, 16.0, 65.0, 16.0 };
+	Bench("collision_stairs_sweep", 0, [&] {
+		auto boxes = collisionWorld.GetCollidingBoundingBoxes(collisionArea);
+		return boxes.size();
+	});
 
 	std::vector<std::unique_ptr<Entity>> massEntities;
 	std::vector<TrackedEntry> massEntries;
