@@ -32,6 +32,7 @@
 #include "gamerules.h"
 #include "world.h"
 #include "username.h"
+#include <unordered_set>
 
 std::shared_ptr<PlayerEntity> EntityManager::GetPlayerWithName(std::string _name) {
 	for (const auto& playerWeak : players) {
@@ -89,8 +90,8 @@ void EntityManager::RemoveEntity(EntityId _id) {
 	}
 
 	std::shared_ptr<Entity> entity = *it;
-	DetachEntity(entity);
 	entities.erase(it);
+	DetachEntity(entity);
 }
 
 void EntityManager::DetachEntity(const std::shared_ptr<Entity>& entity) {
@@ -118,7 +119,9 @@ void EntityManager::DetachEntity(const std::shared_ptr<Entity>& entity) {
 
 	// Unbind ourselves
 	entity->entityManager = nullptr;
-	entitiesById.erase(entity->id);
+	auto indexIt = entitiesById.find(entity->id);
+	if (indexIt != entitiesById.end() && indexIt->second == entity)
+		entitiesById.erase(indexIt);
 
 	// Mark the chunk we died in as dirty
 	if (auto chunk = world->GetChunkRaw({ entity->bucketPos.x, entity->bucketPos.y }))
@@ -160,7 +163,7 @@ void EntityManager::AddEntity(std::shared_ptr<Entity> _entity, EntityId _forceEn
 	}
 
 	entities.push_back(std::move(_entity));
-	entitiesById[entities.back()->id] = entities.back();
+	entitiesById.try_emplace(entities.back()->id, entities.back());
 	if (onEntitySpawn)
 		onEntitySpawn(entities.back());
 }
@@ -241,14 +244,22 @@ void EntityManager::Tick(TickProfiler* _profiler) {
 	// them from the master list in one pass; doing RemoveEntity() per death
 	// was O(dead * entities) because of the repeated find/erase.
 	std::vector<std::shared_ptr<Entity>> dead;
+	std::unordered_set<Entity*> deadSet;
 	for (const auto& entity : entities) {
-		if (entity->isDead)
+		if (entity->isDead) {
 			dead.push_back(entity);
+			deadSet.insert(entity.get());
+		}
 	}
 	for (const auto& entity : dead)
 		DetachEntity(entity);
-	if (!dead.empty()) {
-		std::erase_if(entities, [](const std::shared_ptr<Entity>& _entity) { return _entity->isDead; });
+	// Only erase the snapshot we detached. Entities killed by a despawn
+	// callback stay in the world for a later tick so they can be detached
+	// normally instead of leaving stale bucket/index entries.
+	if (!deadSet.empty()) {
+		std::erase_if(entities, [&](const std::shared_ptr<Entity>& _entity) {
+			return deadSet.contains(_entity.get());
+		});
 	}
 
 	// Clear players that have expired
