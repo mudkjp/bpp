@@ -103,8 +103,14 @@ const std::pair<const std::array<ItemKey, 9>, ItemStack> RecipeManager::MatchGri
 
 	const size_t totalSize = size_t(_size.Total());
 
-	for (size_t i = 0; i < totalSize; ++i)
+	bool anyItem = false;
+	for (size_t i = 0; i < totalSize; ++i) {
 		keyGrid[i] = { _grid[i].id, _grid[i].data };
+		anyItem = anyItem || _grid[i].id != Items::Id::INVALID;
+	}
+	// An empty grid cannot match a real recipe; skip both hash lookups.
+	if (!anyItem)
+		return { {}, { .id = Items::Id::INVALID } };
 
 	{
 		auto shaped = shapedRecipes.find(MakeShapedKey(std::span<const ItemKey>(keyGrid.data(), totalSize), _size));

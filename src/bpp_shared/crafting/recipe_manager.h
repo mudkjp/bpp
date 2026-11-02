@@ -64,8 +64,11 @@ struct ShapedRecipeKeyHasher {
 		HashCombine(h, _key.width);
 		HashCombine(h, _key.height);
 
-		for (const auto& cell : _key.cells)
-			HashCombine(h, cell);
+		// Cells outside width x height are always empty, so hashing them adds
+		// no distinguishing information. Most recipes are 1x1 to 2x2.
+		const size_t cells = size_t(_key.width) * size_t(_key.height);
+		for (size_t i = 0; i < cells; ++i)
+			HashCombine(h, _key.cells[i]);
 
 		return h;
 	}
@@ -76,9 +79,8 @@ struct ShapelessRecipeKeyHasher {
 		size_t h = 0;
 
 		HashCombine(h, _key.count);
-
-		for (const auto& item : _key.items)
-			HashCombine(h, item);
+		for (size_t i = 0; i < _key.count; ++i)
+			HashCombine(h, _key.items[i]);
 
 		return h;
 	}
