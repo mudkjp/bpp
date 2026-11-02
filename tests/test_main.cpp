@@ -27,6 +27,10 @@
 #include "helpers/deflate_pool.h"
 #include "inventory/inventory.h"
 #include "inventory/inventory_interaction.h"
+#include "inventory/interactions/chest.h"
+#include "inventory/interactions/crafting_table.h"
+#include "inventory/interactions/dispenser.h"
+#include "inventory/interactions/furnace.h"
 #include "inventory/interactions/large_chest.h"
 #include "inventory/item_stack.h"
 #include "helpers/endian_convert.h"
@@ -40,6 +44,8 @@
 #include "player_conn/player_session.h"
 #include "runtime.h"
 #include "tile_entities/tile_entity_chest.h"
+#include "tile_entities/tile_entity_dispenser.h"
+#include "tile_entities/tile_entity_furnace.h"
 #include "strings/ucs2.h"
 #include "subchunk.h"
 #include "world/generator/overworld/chunk_gen.h"
@@ -1788,6 +1794,42 @@ void TestLargeChestInteraction() {
 	CHECK_EQ(playerInventory.slots[9].id, ItemId(9));
 }
 
+void TestContainerMirrorSync() {
+	InventoryPlayer player;
+	auto chest = std::make_shared<TileEntityChest>(Int3{ 0, 64, 0 });
+	ChestInventoryInteraction chestInteraction(&player, chest);
+	chestInteraction.InitSnapshot();
+	CHECK(chestInteraction.TickDiff().empty());
+
+	// External changes to the real inventory are picked up without copying
+	// unchanged slots into the shared mirror.
+	chest->inventory.slots[0] = ItemStack{ ItemId(5), 2, 0 };
+	auto external = chestInteraction.TickDiff();
+	CHECK_EQ(external.size(), size_t(1));
+	CHECK_EQ(external[0].slot, 0);
+	CHECK(chestInteraction.TickDiff().empty());
+
+	// Client-side changes through the shared mirror are still reported.
+	chestInteraction.sharedInventory.slots[1] = ItemStack{ ItemId(6), 1, 0 };
+	chestInteraction.sharedInventory.OnInventoryChanged();
+	auto mirror = chestInteraction.TickDiff();
+	CHECK_EQ(mirror.size(), size_t(1));
+	CHECK_EQ(mirror[0].slot, 1);
+	CHECK_EQ(chest->inventory.slots[1].id, ItemId(6));
+	CHECK(chestInteraction.TickDiff().empty());
+
+	// Furnace output produced externally.
+	auto furnace = std::make_shared<TileEntityFurnace>(Int3{ 0, 64, 0 });
+	FurnaceInventoryInteraction furnaceInteraction(&player, furnace);
+	furnaceInteraction.InitSnapshot();
+	CHECK(furnaceInteraction.TickDiff().empty());
+	furnace->inventory.slots[2] = ItemStack{ ItemId(7), 1, 0 };
+	auto furnaceDiff = furnaceInteraction.TickDiff();
+	CHECK_EQ(furnaceDiff.size(), size_t(1));
+	CHECK_EQ(furnaceDiff[0].slot, 2);
+	CHECK(furnaceInteraction.TickDiff().empty());
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -2031,6 +2073,7 @@ std::vector<TestCase> Tests() {
 		{ "recipe_mirror", TestRecipeMirror },
 		{ "inventory_tick_diff", TestInventoryTickDiff },
 		{ "large_chest_interaction", TestLargeChestInteraction },
+		{ "container_mirror_sync", TestContainerMirrorSync },
 		{ "player_save_queue", TestPlayerSaveQueue },
 		{ "command_parsing", TestCommandParsing },
 		{ "config_fixture", TestConfigFixture },
@@ -2256,6 +2299,60 @@ void RunBenchmarks() {
 		for (auto& slot : diffInventory.slots)
 			slot = fill ? ItemStack{ ItemId(5), 1, 0 } : ItemStack{};
 		return diffInteraction.TickDiff().size();
+	});
+
+	InventoryPlayer mirrorPlayer;
+	auto mirrorChest = std::make_shared<TileEntityChest>(Int3{ 0, 64, 0 });
+	ChestInventoryInteraction chestBench(&mirrorPlayer, mirrorChest);
+	chestBench.InitSnapshot();
+	Bench("chest_tickdiff_unchanged", 0, [&] {
+		return chestBench.TickDiff().size();
+	});
+	int chestToggle = 0;
+	Bench("chest_tickdiff_changed", 0, [&] {
+		mirrorChest->inventory.slots[0] =
+		    (chestToggle++ & 1) ? ItemStack{ ItemId(5), 1, 0 } : ItemStack{};
+		return chestBench.TickDiff().size();
+	});
+
+	auto mirrorFurnace = std::make_shared<TileEntityFurnace>(Int3{ 0, 64, 0 });
+	FurnaceInventoryInteraction furnaceBench(&mirrorPlayer, mirrorFurnace);
+	furnaceBench.InitSnapshot();
+	Bench("furnace_tickdiff_unchanged", 0, [&] {
+		return furnaceBench.TickDiff().size();
+	});
+	int furnaceToggle = 0;
+	Bench("furnace_tickdiff_changed", 0, [&] {
+		mirrorFurnace->inventory.slots[2] =
+		    (furnaceToggle++ & 1) ? ItemStack{ ItemId(6), 1, 0 } : ItemStack{};
+		return furnaceBench.TickDiff().size();
+	});
+
+	auto mirrorDispenser = std::make_shared<TileEntityDispenser>(Int3{ 0, 64, 0 });
+	TrapInventoryInteraction dispenserBench(&mirrorPlayer, mirrorDispenser);
+	dispenserBench.InitSnapshot();
+	Bench("dispenser_tickdiff_unchanged", 0, [&] {
+		return dispenserBench.TickDiff().size();
+	});
+	int dispenserToggle = 0;
+	Bench("dispenser_tickdiff_changed", 0, [&] {
+		mirrorDispenser->inventory.slots[4] =
+		    (dispenserToggle++ & 1) ? ItemStack{ ItemId(7), 1, 0 } : ItemStack{};
+		return dispenserBench.TickDiff().size();
+	});
+
+	Runtime craftBenchRuntime;
+	WorldManager craftBenchWorld;
+	CraftingTableInventoryInteraction craftBench(&mirrorPlayer, craftBenchWorld, craftBenchRuntime, Int3{ 0, 64, 0 });
+	craftBench.InitSnapshot();
+	Bench("crafting_table_tickdiff_unchanged", 0, [&] {
+		return craftBench.TickDiff().size();
+	});
+	int craftToggle = 0;
+	Bench("crafting_table_tickdiff_changed", 0, [&] {
+		craftBench.craftInventory.slots[1] =
+		    (craftToggle++ & 1) ? ItemStack{ ItemId(8), 1, 0 } : ItemStack{};
+		return craftBench.TickDiff().size();
 	});
 
 	InventoryPlayer largePlayer;
