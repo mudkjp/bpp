@@ -27,6 +27,7 @@
 #include "helpers/deflate_pool.h"
 #include "inventory/inventory.h"
 #include "inventory/inventory_interaction.h"
+#include "inventory/interactions/large_chest.h"
 #include "inventory/item_stack.h"
 #include "helpers/endian_convert.h"
 #include "helpers/packed_array.h"
@@ -38,6 +39,7 @@
 #include "pathfinding/pathfinder.h"
 #include "player_conn/player_session.h"
 #include "runtime.h"
+#include "tile_entities/tile_entity_chest.h"
 #include "strings/ucs2.h"
 #include "subchunk.h"
 #include "world/generator/overworld/chunk_gen.h"
@@ -1755,6 +1757,37 @@ void TestSendChatFastPath() {
 	CHECK_EQ(unicode[0], std::string("héllo ☃"));
 }
 
+void TestLargeChestInteraction() {
+	InventoryPlayer playerInventory;
+	auto upper = std::make_shared<TileEntityChest>(Int3{ 0, 64, 0 });
+	auto lower = std::make_shared<TileEntityChest>(Int3{ 0, 64, 1 });
+	upper->inventory.slots[0] = ItemStack{ ItemId(5), 2, 0 };
+	playerInventory.slots[9] = ItemStack{ ItemId(6), 1, 0 };
+
+	LargeChestInventoryInteraction interaction(&playerInventory, upper, lower);
+	interaction.InitSnapshot();
+	CHECK_EQ(interaction.sharedInventory.slots[0].id, ItemId(5));
+	CHECK_EQ(interaction.sharedInventory.slots[54].id, ItemId(6));
+
+	// Unchanged writeback must not dirty either chest.
+	upper->inventory.isModified = false;
+	lower->inventory.isModified = false;
+	interaction.WriteBack();
+	CHECK(!upper->inventory.isModified);
+	CHECK(!lower->inventory.isModified);
+
+	// Changed slots are written directly and notify the owning chest.
+	interaction.sharedInventory.slots[0] = ItemStack{ ItemId(7), 3, 1 };
+	interaction.sharedInventory.slots[27] = ItemStack{ ItemId(8), 4, 2 }; // lower chest slot 0
+	interaction.sharedInventory.slots[54] = ItemStack{ ItemId(9), 5, 0 }; // player slot 9
+	interaction.WriteBack();
+	CHECK_EQ(upper->inventory.slots[0].id, ItemId(7));
+	CHECK(upper->inventory.isModified);
+	CHECK_EQ(lower->inventory.slots[0].id, ItemId(8));
+	CHECK(lower->inventory.isModified);
+	CHECK_EQ(playerInventory.slots[9].id, ItemId(9));
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1997,6 +2030,7 @@ std::vector<TestCase> Tests() {
 		{ "region_manager_save_queue", TestRegionManagerSaveQueue },
 		{ "recipe_mirror", TestRecipeMirror },
 		{ "inventory_tick_diff", TestInventoryTickDiff },
+		{ "large_chest_interaction", TestLargeChestInteraction },
 		{ "player_save_queue", TestPlayerSaveQueue },
 		{ "command_parsing", TestCommandParsing },
 		{ "config_fixture", TestConfigFixture },
@@ -2222,6 +2256,42 @@ void RunBenchmarks() {
 		for (auto& slot : diffInventory.slots)
 			slot = fill ? ItemStack{ ItemId(5), 1, 0 } : ItemStack{};
 		return diffInteraction.TickDiff().size();
+	});
+
+	InventoryPlayer largePlayer;
+	auto largeUpper = std::make_shared<TileEntityChest>(Int3{ 0, 64, 0 });
+	auto largeLower = std::make_shared<TileEntityChest>(Int3{ 0, 64, 1 });
+	for (int i = 0; i < 27; ++i) {
+		if (i % 2 == 0)
+			largeUpper->inventory.slots[size_t(i)] = ItemStack{ ItemId(5), 1, 0 };
+		if (i % 3 == 0)
+			largeLower->inventory.slots[size_t(i)] = ItemStack{ ItemId(6), 1, 0 };
+	}
+	for (int i = 9; i < 45; ++i) {
+		if (i % 4 == 0)
+			largePlayer.slots[size_t(i)] = ItemStack{ ItemId(7), 1, 0 };
+	}
+	LargeChestInventoryInteraction largeChest(&largePlayer, largeUpper, largeLower);
+	largeChest.InitSnapshot();
+	Bench("large_chest_tickdiff_unchanged", 0, [&] {
+		return largeChest.TickDiff().size();
+	});
+	int largeChestToggle = 0;
+	Bench("large_chest_tickdiff_changed", 0, [&] {
+		largeUpper->inventory.slots[7] =
+		    (largeChestToggle++ & 1) ? ItemStack{ ItemId(5), 1, 0 } : ItemStack{};
+		return largeChest.TickDiff().size();
+	});
+	Bench("large_chest_writeback_unchanged", 0, [&] {
+		largeChest.WriteBack();
+		return size_t(1);
+	});
+	int largeWriteToggle = 0;
+	Bench("large_chest_writeback_changed", 0, [&] {
+		largeChest.sharedInventory.slots[5] = (largeWriteToggle++ & 1) ? ItemStack{ ItemId(7), 2, 0 }
+		                                                              : ItemStack{ ItemId(8), 3, 1 };
+		largeChest.WriteBack();
+		return size_t(1);
 	});
 
 	TempDir saveBenchTemp("player-save-bench");
