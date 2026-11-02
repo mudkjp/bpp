@@ -957,6 +957,8 @@ void TestChunkSenderStationaryScan() {
 	world.chunks[Int32_2{ 0, 0 }] = chunk;
 	sender.Enqueue(session, world, 100);
 	CHECK(session.sentChunks.contains(Int32_2{ 0, 0 }));
+	CHECK(std::find(session.newlySent.begin(), session.newlySent.end(), Int32_2{ 0, 0 }) !=
+	      session.newlySent.end());
 	CHECK_EQ(sender.radiusLookups, afterFirst);
 }
 
@@ -1656,6 +1658,29 @@ void RunBenchmarks() {
 		broadcastPacket.Serialize(broadcastScratch);
 		return broadcastScratch.GetRawWriteBuffer().size();
 	});
+
+	std::vector<std::unique_ptr<PlayerSession>> indexSessions;
+	for (int i = 0; i < 100; ++i)
+		indexSessions.push_back(std::make_unique<PlayerSession>(-1, benchRuntime));
+	std::unordered_map<Int32_3, std::vector<PlayerSession*>> sentIndex;
+	std::vector<Int32_3> sentKeys;
+	for (int i = 0; i < 1000; ++i) {
+		Int32_3 key{ i % 100, i / 100, 0 };
+		sentKeys.push_back(key);
+		auto& sessions = sentIndex[key];
+		for (int j = 0; j < 4; ++j)
+			sessions.push_back(indexSessions[(i + j) % indexSessions.size()].get());
+	}
+	Bench("broadcast_sent_index_1000", 0, [&] {
+		size_t found = 0;
+		for (const auto& key : sentKeys) {
+			auto it = sentIndex.find(key);
+			if (it != sentIndex.end())
+				found += it->second.size();
+		}
+		return found;
+	});
+	std::cout << "BENCH broadcast_sent_index_operations  chunks=1000 players=100 player_scans=0\n";
 
 	TempDir temp("region-bench");
 	std::filesystem::copy_file(Fixture("region/r.0.0.mcr"), temp.path / "r.0.0.mcr");
