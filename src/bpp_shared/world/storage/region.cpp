@@ -27,7 +27,7 @@ constexpr size_t HEIGHT_MAP_DATA_SIZE = 16 * 16;
 // TODO: Calculate a more accurate baseline that takes into account
 // - The NBT Tag bytes themselves
 // - Any always-existing NBT labels
-constexpr size_t BASE_MEMORY_ALLOCATION_GUESS = CHUNK_DATA_SIZE + HEIGHT_MAP_DATA_SIZE * 1.1;
+constexpr size_t BASE_MEMORY_ALLOCATION_GUESS = (CHUNK_DATA_SIZE + HEIGHT_MAP_DATA_SIZE) * 1.1;
 
 // First guess for how big a chunk's decompressed NBT is,
 // rounded up to a whole number of memory pages
@@ -37,6 +37,70 @@ size_t InitialDecompressedSize() {
 		return ((BASE_MEMORY_ALLOCATION_GUESS + page - 1) / page) * page;
 	}();
 	return size;
+}
+
+// A decoded sub-chunk layer is often completely uniform (solid stone, air,
+// zero metadata, open-sky light). Detecting that before decoding lets the
+// loader set one fill value instead of calling a setter 4096 times.
+struct SliceUniformity {
+	bool allBlocksValid = false;
+	bool blockUniform = false;
+	bool metaUniform = false;
+	bool blockLightUniform = false;
+	bool skyLightUniform = false;
+	BlockType block = BLOCK_AIR;
+	uint8_t meta = 0;
+	uint8_t blockLight = 0;
+	uint8_t skyLight = 15;
+};
+
+bool UniformNibbleSlice(const int8_t* _data, int _baseY, uint8_t& _value) {
+	const size_t firstIdx = size_t(_baseY);
+	_value = uint8_t(uint8_t(_data[firstIdx / 2]) & 0x0F);
+	const uint8_t packed = uint8_t(_value | (_value << 4));
+	for (int x = 0; x < CHUNK_WIDTH; ++x) {
+		for (int z = 0; z < CHUNK_WIDTH; ++z) {
+			const size_t base = size_t(_baseY + z * CHUNK_HEIGHT + x * CHUNK_HEIGHT * CHUNK_WIDTH);
+			for (int pair = 0; pair < SUB_CHUNK_SIZE / 2; ++pair) {
+				if (uint8_t(_data[(base + pair * 2) / 2]) != packed)
+					return false;
+			}
+		}
+	}
+	return true;
+}
+
+SliceUniformity AnalyzeSlice(const int8_t* _blocks, const int8_t* _meta, const int8_t* _blockLight,
+                             const int8_t* _skyLight, int _s) {
+	SliceUniformity result;
+	const int baseY = _s * SUB_CHUNK_SIZE;
+	result.allBlocksValid = true;
+	result.blockUniform = true;
+
+	bool first = true;
+	for (int x = 0; x < CHUNK_WIDTH; ++x) {
+		for (int z = 0; z < CHUNK_WIDTH; ++z) {
+			for (int y = baseY; y < baseY + SUB_CHUNK_SIZE; ++y) {
+				const size_t idx = size_t(y + z * CHUNK_HEIGHT + x * CHUNK_HEIGHT * CHUNK_WIDTH);
+				const BlockType block = BlockType(_blocks[idx]);
+				if (!Items::IsBlock(block)) {
+					result.allBlocksValid = false;
+					return result;
+				}
+				if (first) {
+					result.block = block;
+					first = false;
+				} else if (block != result.block) {
+					result.blockUniform = false;
+				}
+			}
+		}
+	}
+
+	result.metaUniform = UniformNibbleSlice(_meta, baseY, result.meta);
+	result.blockLightUniform = UniformNibbleSlice(_blockLight, baseY, result.blockLight);
+	result.skyLightUniform = UniformNibbleSlice(_skyLight, baseY, result.skyLight);
+	return result;
 }
 }
 
@@ -141,8 +205,8 @@ bool Region::AddChunk(std::shared_ptr<Chunk> _chunk, int64_t _timestamp,
 	size_t written = 5 + compressed.size();
 	size_t padded = sectorsNeeded * SECTOR_SIZE;
 	if (written < padded) {
-		std::vector<char> pad(padded - written, 0);
-		file.write(pad.data(), pad.size());
+		static constexpr std::array<char, SECTOR_SIZE> zeroPad{};
+		file.write(zeroPad.data(), static_cast<std::streamsize>(padded - written));
 	}
 
 	// Make sure the data is on its way to disk BEFORE the header points at it
@@ -426,7 +490,7 @@ std::shared_ptr<Chunk> Region::DecodeNbtData(const std::vector<uint8_t>& _rawDat
 
 std::shared_ptr<Chunk> Region::DecodeDecompressedNbtData(std::vector<uint8_t>& _decompressedData) {
 	NBTParser parser(_decompressedData.data(), int64_t(_decompressedData.size()));
-	const Tag& lvl = parser.root.Get("Level");
+	Tag& lvl = parser.root.Get("Level");
 
 	int32_t cx = lvl.Get("xPos").GetInt();
 	int32_t cz = lvl.Get("zPos").GetInt();
@@ -441,8 +505,8 @@ std::shared_ptr<Chunk> Region::DecodeDecompressedNbtData(std::vector<uint8_t>& _
 	const auto& heightMap = lvl.Get("HeightMap").GetByteArray();
 	const auto& tileEntities = lvl.Get("TileEntities").GetList();
 
-	std::vector<Tag> empty = {};
-	const auto& entities = lvl.Has("Entities") ? lvl.Get("Entities").GetList() : empty;
+	std::vector<Tag> emptyEntities;
+	std::vector<Tag>* entities = lvl.Has("Entities") ? &lvl.Get("Entities").list : &emptyEntities;
 
 	// Setup our chunk
 	auto chunk = std::make_shared<Chunk>();
@@ -460,33 +524,86 @@ std::shared_ptr<Chunk> Region::DecodeDecompressedNbtData(std::vector<uint8_t>& _
 	bool any = false;
 	for (int s = 0; s < SUB_CHUNK_COUNT; s++) {
 		SubChunk& sub = chunk->subChunks[size_t(s)];
-		for (int ly = 0; ly < SUB_CHUNK_SIZE; ly += 2) {
-			const int y = s * SUB_CHUNK_SIZE + ly;
-			for (int x = 0; x < CHUNK_WIDTH; x++) {
-				for (int z = 0; z < CHUNK_WIDTH; z++) {
-					const size_t idx = size_t(y + (z * CHUNK_HEIGHT) + (x * CHUNK_HEIGHT * CHUNK_WIDTH));
-					const int li = SubChunk::LocalIndex({ x, y, z });
-					const int liNext = li + SUB_CHUNK_SIZE * SUB_CHUNK_SIZE;
-					const uint8_t packedMeta = uint8_t(dataIn[idx / 2]);
-					const uint8_t packedBlockLight = uint8_t(blightIn[idx / 2]);
-					const uint8_t packedSkyLight = uint8_t(skyIn[idx / 2]);
+		const SliceUniformity uniform = AnalyzeSlice(blocksIn, dataIn, blightIn, skyIn, s);
+		const bool hasUniformLayer = uniform.blockUniform || uniform.metaUniform ||
+		                             uniform.blockLightUniform || uniform.skyLightUniform;
 
-					const BlockType block0 = BlockType(blocksIn[idx]);
-					if (Items::IsBlock(block0)) {
-						any = true;
-						sub.SetBlock(li, block0);
-						sub.SetMeta(li, packedMeta & 0x0F);
-						sub.SetBlockLight(li, packedBlockLight & 0x0F);
-						sub.SetSkyLight(li, packedSkyLight & 0x0F);
+		if (uniform.allBlocksValid && hasUniformLayer) {
+			if (uniform.blockUniform)
+				sub.FillBlocks(uniform.block);
+			if (uniform.metaUniform)
+				sub.FillMeta(uniform.meta);
+			if (uniform.blockLightUniform)
+				sub.FillBlockLight(uniform.blockLight);
+			if (uniform.skyLightUniform)
+				sub.FillSkyLight(uniform.skyLight);
+
+			const bool needsLoop = !uniform.blockUniform || !uniform.metaUniform ||
+			                       !uniform.blockLightUniform || !uniform.skyLightUniform;
+			if (needsLoop) {
+				for (int ly = 0; ly < SUB_CHUNK_SIZE; ly += 2) {
+					const int y = s * SUB_CHUNK_SIZE + ly;
+					for (int x = 0; x < CHUNK_WIDTH; x++) {
+						for (int z = 0; z < CHUNK_WIDTH; z++) {
+							const size_t idx =
+							    size_t(y + (z * CHUNK_HEIGHT) + (x * CHUNK_HEIGHT * CHUNK_WIDTH));
+							const int li = SubChunk::LocalIndex({ x, y, z });
+							const int liNext = li + SUB_CHUNK_SIZE * SUB_CHUNK_SIZE;
+							const uint8_t packedMeta = uint8_t(dataIn[idx / 2]);
+							const uint8_t packedBlockLight = uint8_t(blightIn[idx / 2]);
+							const uint8_t packedSkyLight = uint8_t(skyIn[idx / 2]);
+
+							if (!uniform.blockUniform) {
+								sub.SetBlock(li, BlockType(blocksIn[idx]));
+								sub.SetBlock(liNext, BlockType(blocksIn[idx + 1]));
+							}
+							if (!uniform.metaUniform) {
+								sub.SetMeta(li, packedMeta & 0x0F);
+								sub.SetMeta(liNext, packedMeta >> 4);
+							}
+							if (!uniform.blockLightUniform) {
+								sub.SetBlockLight(li, packedBlockLight & 0x0F);
+								sub.SetBlockLight(liNext, packedBlockLight >> 4);
+							}
+							if (!uniform.skyLightUniform) {
+								sub.SetSkyLight(li, packedSkyLight & 0x0F);
+								sub.SetSkyLight(liNext, packedSkyLight >> 4);
+							}
+						}
 					}
+				}
+			}
+		} else {
+			// Rare corrupt/invalid block ids: keep the exact per-voxel path,
+			// which leaves invalid voxels at their default fill values.
+			for (int ly = 0; ly < SUB_CHUNK_SIZE; ly += 2) {
+				const int y = s * SUB_CHUNK_SIZE + ly;
+				for (int x = 0; x < CHUNK_WIDTH; x++) {
+					for (int z = 0; z < CHUNK_WIDTH; z++) {
+						const size_t idx = size_t(y + (z * CHUNK_HEIGHT) + (x * CHUNK_HEIGHT * CHUNK_WIDTH));
+						const int li = SubChunk::LocalIndex({ x, y, z });
+						const int liNext = li + SUB_CHUNK_SIZE * SUB_CHUNK_SIZE;
+						const uint8_t packedMeta = uint8_t(dataIn[idx / 2]);
+						const uint8_t packedBlockLight = uint8_t(blightIn[idx / 2]);
+						const uint8_t packedSkyLight = uint8_t(skyIn[idx / 2]);
 
-					const BlockType block1 = BlockType(blocksIn[idx + 1]);
-					if (Items::IsBlock(block1)) {
-						any = true;
-						sub.SetBlock(liNext, block1);
-						sub.SetMeta(liNext, packedMeta >> 4);
-						sub.SetBlockLight(liNext, packedBlockLight >> 4);
-						sub.SetSkyLight(liNext, packedSkyLight >> 4);
+						const BlockType block0 = BlockType(blocksIn[idx]);
+						if (Items::IsBlock(block0)) {
+							any = true;
+							sub.SetBlock(li, block0);
+							sub.SetMeta(li, packedMeta & 0x0F);
+							sub.SetBlockLight(li, packedBlockLight & 0x0F);
+							sub.SetSkyLight(li, packedSkyLight & 0x0F);
+						}
+
+						const BlockType block1 = BlockType(blocksIn[idx + 1]);
+						if (Items::IsBlock(block1)) {
+							any = true;
+							sub.SetBlock(liNext, block1);
+							sub.SetMeta(liNext, packedMeta >> 4);
+							sub.SetBlockLight(liNext, packedBlockLight >> 4);
+							sub.SetSkyLight(liNext, packedSkyLight >> 4);
+						}
 					}
 				}
 			}
@@ -496,8 +613,9 @@ std::shared_ptr<Chunk> Region::DecodeDecompressedNbtData(std::vector<uint8_t>& _
 	if (any)
 		chunk->isModified = true;
 
-	// Load our entities
-	chunk->entityTags = std::move(entities);
+	// Load our entities. The parser owns the tag tree and is discarded at the
+	// end of this function, so move the list instead of deep-copying it.
+	chunk->entityTags = std::move(*entities);
 
 	// Load our tile entities
 	for (auto& te : tileEntities) {

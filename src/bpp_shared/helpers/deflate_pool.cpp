@@ -136,12 +136,16 @@ std::optional<std::vector<uint8_t>> Deflate::Decompress(const Format _format, st
     size_t capacity = std::max<size_t>(_sizeHint, 1);
 
     while (capacity <= K_MAX_DECOMPRESSED_SIZE) {
-        if (scratch.size() < capacity)
-            scratch.resize(capacity);
+        // A previous chunk may already have grown the thread-local buffer
+        // beyond today's hint. Offer that capacity first instead of failing
+        // with INSUFFICIENT_SPACE and growing (and zero-filling) again.
+        const size_t attempt = std::max(capacity, scratch.size());
+        if (scratch.size() < attempt)
+            scratch.resize(attempt);
 
         size_t written = 0;
         const libdeflate_result res =
-            DecompressInto(d, _format, _input, std::span<uint8_t>(scratch.data(), capacity), written);
+            DecompressInto(d, _format, _input, std::span<uint8_t>(scratch.data(), attempt), written);
 
         if (res == LIBDEFLATE_SUCCESS)
             return std::vector<uint8_t>(scratch.begin(), scratch.begin() + static_cast<std::ptrdiff_t>(written));
@@ -151,7 +155,7 @@ std::optional<std::vector<uint8_t>> Deflate::Decompress(const Format _format, st
         // Compressed chunk data commonly expands by 20-80x. Growing by 4x
         // reaches the real size in far fewer decompression attempts than the
         // old doubling loop, while still not over-allocating for typical data.
-        capacity *= 4;
+        capacity = attempt * 4;
     }
     return std::nullopt;
 }

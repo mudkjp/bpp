@@ -148,6 +148,15 @@ struct Tag {
 		return it->second;
 	}
 
+	Tag& Get(const std::string& _key) {
+		auto it = compound.find(_key);
+		if (it == compound.end()) {
+			Logger::Error << "Tried to access a NBT tag that doesn't exist! (" << _key << ")\n";
+			throw std::runtime_error("NBT tag doesn't exist!");
+		}
+		return it->second;
+	}
+
 private:
 	void Expect(TagType _t) const {
 		if (type != _t) {

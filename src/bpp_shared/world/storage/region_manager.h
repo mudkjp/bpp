@@ -84,7 +84,7 @@ struct RegionManager {
 		CACHE_BUSY,
 		SUCCESS
 	};
-	std::shared_ptr<Region> LoadRegion(const Int32_2 _rpos, LoadState& _state);
+	std::shared_ptr<Region> LoadRegion(const Int32_2 _rpos, LoadState& _state, bool _createIfMissing = true);
 
 	void FatalIo(const std::string& _what, Int32_2 _cpos);
 	bool HasFatalIo() const {

@@ -10,6 +10,7 @@
 #include "helpers/endian_convert.h"
 #include "helpers/file_handle.h"
 #include "numeric_structs.h"
+#include <array>
 #include <memory>
 #include <mutex>
 
@@ -68,10 +69,12 @@ public:
 	void ReadHeaderFromFile() {
 		auto& file = regionFile.Get();
 		file.seekg(0); // Beginning of sector 0
+		std::array<uint8_t, SECTOR_SIZE> buffer{};
+		file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(buffer.size()));
 		for (int i = 0; i < 1024; i++) {
-			uint32_t entry;
-			file.read(reinterpret_cast<char*>(&entry), 4);
-			entry = FromBigEndian(entry);
+			const uint8_t* p = buffer.data() + i * 4;
+			uint32_t entry = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) |
+			                 uint32_t(p[3]);
 			regionHeader[i].numberOfSectors = entry & 0xFF; // bottom 1 byte
 			regionHeader[i].offset = entry >> 8;            // top 3 bytes
 		}

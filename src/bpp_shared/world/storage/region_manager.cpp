@@ -129,7 +129,7 @@ bool RegionManager::ChunkExists(const Int32_2 _cpos) {
 	if (!RegionExists({ _cpos.x >> 5, _cpos.z >> 5 }))
 		return false;
 	LoadState state = LoadState::FAILED;
-	auto region = LoadRegion({ _cpos.x >> 5, _cpos.z >> 5 }, state);
+	auto region = LoadRegion({ _cpos.x >> 5, _cpos.z >> 5 }, state, false);
 	if (state == LoadState::FAILED)
 		return false;
 	if (state == LoadState::CACHE_BUSY)
@@ -189,7 +189,7 @@ void RegionManager::LoadChunk(const Int32_2 _cpos) {
 		return;
 	}
 	LoadState state = LoadState::FAILED;
-	auto region = LoadRegion(rpos, state); // shared_ptr keeps Region alive for the task
+	auto region = LoadRegion(rpos, state, false); // shared_ptr keeps Region alive for the task
 	if (!region) {
 		MarkLoadFailed(_cpos);
 		return;
@@ -298,7 +298,7 @@ void RegionManager::FlushAll() {
 	Logger::Error << "FlushAll: save queue not empty after 64 passes\n";
 }
 
-std::shared_ptr<Region> RegionManager::LoadRegion(const Int32_2 _rpos, LoadState& _state) {
+std::shared_ptr<Region> RegionManager::LoadRegion(const Int32_2 _rpos, LoadState& _state, bool _createIfMissing) {
 	// Check cache first
 	for (int i = 0; i < 8; i++) {
 		if (regionCache[i] && regionCache[i]->rpos == _rpos) {
@@ -316,6 +316,10 @@ std::shared_ptr<Region> RegionManager::LoadRegion(const Int32_2 _rpos, LoadState
 	}
 
 	if (!RegionExistsOnDisk(_rpos)) {
+		if (!_createIfMissing) {
+			_state = LoadState::FAILED;
+			return nullptr;
+		}
 		if (!CreateRegion(_rpos)) {
 			Logger::Error << "Failed to create region file for " << _rpos.x << "," << _rpos.z << "\n";
 			_state = LoadState::FAILED;
