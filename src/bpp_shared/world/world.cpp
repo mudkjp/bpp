@@ -820,6 +820,28 @@ void WorldManager::SeedChunkLighting(Int32_2 _pos) {
 
 	// We check each column in the chunk's height against its neighbors, if they differ then we schedule light updates for the vertical column between them.
 	// This works like 99% of the time but can miss some edge cases; its fast though!
+	//
+	// Resolve the 3x3 chunk neighborhood once. The old loop called
+	// WorldManager::GetHeightValue() for every column and direction, which did
+	// a chunk-map lookup for each of the ~1024 probes.
+	Chunk* heightGrid[3][3] = {};
+	for (int dx = -1; dx <= 1; ++dx) {
+		for (int dz = -1; dz <= 1; ++dz) {
+			Chunk* neighbor = GetChunkRaw({ _pos.x + dx, _pos.z + dz });
+			if (neighbor && neighbor->state.load(std::memory_order_acquire) < ChunkState::Generated)
+				neighbor = nullptr;
+			heightGrid[dx + 1][dz + 1] = neighbor;
+		}
+	}
+	auto neighborHeight = [&](int _wx, int _wz) -> int {
+		const int dx = (_wx >> 4) - _pos.x;
+		const int dz = (_wz >> 4) - _pos.z;
+		if (dx < -1 || dx > 1 || dz < -1 || dz > 1)
+			return 0;
+		Chunk* neighbor = heightGrid[dx + 1][dz + 1];
+		return neighbor ? int(neighbor->GetHeightValue({ _wx & 15, _wz & 15 })) : 0;
+	};
+
 	int bx = _pos.x * CHUNK_WIDTH;
 	int bz = _pos.z * CHUNK_WIDTH;
 	for (int x = 0; x < CHUNK_WIDTH; ++x) {
@@ -830,7 +852,7 @@ void WorldManager::SeedChunkLighting(Int32_2 _pos) {
 			const int ndz[] = { 0, 0, -1, 1 };
 			for (int i = 0; i < 4; ++i) {
 				int nx = wx + ndx[i], nz = wz + ndz[i];
-				int neighborH = GetHeightValue(nx, nz);
+				int neighborH = neighborHeight(nx, nz);
 				if (neighborH == thisH)
 					continue;
 				int minY = std::min<int>(thisH, neighborH);
@@ -1595,17 +1617,55 @@ void WorldManager::PropagateChunkLightBorders(Int32_2 _cpos) {
 				break;
 			}
 
-			for (int y = 0; y < CHUNK_HEIGHT; ++y) {
-				const Int3 ownPos = { lx, y, lz };
-				const Int3 neighborPos = { nx, y, nz };
+			const int ownBase = lz * SUB_CHUNK_SIZE + lx;
+			const int neighborBase = nz * SUB_CHUNK_SIZE + nx;
+			const int skyLimit = std::max<int>(chunk->GetHeightValue({ lx, lz }),
+			                                   neighborChunk->GetHeightValue({ nx, nz }));
+			const int worldX = bpos.x + lx;
+			const int worldZ = bpos.z + lz;
 
-				// Only the neighbor being brighter can change our cell. Most
-				// border cells are already equal or brighter, so skipping
-				// them avoids thousands of no-op propagation steps per chunk.
-				if (neighborChunk->GetBlockLight(neighborPos) > chunk->GetBlockLight(ownPos))
-					lightManager.ScheduleLightUpdate({ bpos.x + lx, y, bpos.z + lz }, LightType::Block);
-				if (neighborChunk->GetSkyLight(neighborPos) > chunk->GetSkyLight(ownPos))
-					lightManager.ScheduleLightUpdate({ bpos.x + lx, y, bpos.z + lz }, LightType::Sky);
+			// Whole slices that are uniform on both sides can be compared from
+			// their fill values instead of reading 16 voxel pairs one by one.
+			for (int s = 0; s < SUB_CHUNK_COUNT; ++s) {
+				const SubChunk& own = chunk->subChunks[size_t(s)];
+				const SubChunk& other = neighborChunk->subChunks[size_t(s)];
+				const int sliceY = s * SUB_CHUNK_SIZE;
+
+				const bool ownSkyUniform = !own.skyLight;
+				const bool otherSkyUniform = !other.skyLight;
+				const bool ownBlockUniform = !own.blockLight;
+				const bool otherBlockUniform = !other.blockLight;
+
+				if (ownSkyUniform && otherSkyUniform) {
+					if (other.skyLightFill > own.skyLightFill)
+						lightManager.ScheduleLightRegion({ worldX, sliceY, worldZ },
+						                                 { worldX, sliceY + SUB_CHUNK_SIZE - 1, worldZ },
+						                                 LightType::Sky);
+				} else if (sliceY < skyLimit) {
+					const int endY = std::min<int>(sliceY + SUB_CHUNK_SIZE, skyLimit);
+					for (int y = sliceY; y < endY; ++y) {
+						const int local = y - sliceY;
+						const int ownIndex = local * SUB_CHUNK_SIZE * SUB_CHUNK_SIZE + ownBase;
+						const int otherIndex = local * SUB_CHUNK_SIZE * SUB_CHUNK_SIZE + neighborBase;
+						if (other.GetSkyLight(otherIndex) > own.GetSkyLight(ownIndex))
+							lightManager.ScheduleLightUpdate({ worldX, y, worldZ }, LightType::Sky);
+					}
+				}
+
+				if (ownBlockUniform && otherBlockUniform) {
+					if (other.blockLightFill > own.blockLightFill)
+						lightManager.ScheduleLightRegion({ worldX, sliceY, worldZ },
+						                                 { worldX, sliceY + SUB_CHUNK_SIZE - 1, worldZ },
+						                                 LightType::Block);
+				} else {
+					for (int y = sliceY; y < sliceY + SUB_CHUNK_SIZE; ++y) {
+						const int local = y - sliceY;
+						const int ownIndex = local * SUB_CHUNK_SIZE * SUB_CHUNK_SIZE + ownBase;
+						const int otherIndex = local * SUB_CHUNK_SIZE * SUB_CHUNK_SIZE + neighborBase;
+						if (other.GetBlockLight(otherIndex) > own.GetBlockLight(ownIndex))
+							lightManager.ScheduleLightUpdate({ worldX, y, worldZ }, LightType::Block);
+					}
+				}
 			}
 		}
 	}
