@@ -1308,6 +1308,49 @@ void TestRedstoneReentrantUpdate() {
 		CHECK_EQ(int(world.GetMetadata({ x, 64, 8 })), 0);
 }
 
+void TestChunkSenderFlushOrdering() {
+	Runtime runtime;
+	PlayerSession session(-1, runtime);
+	ChunkSender sender;
+
+	auto makeReady = [](Int32_2 _pos) {
+		Packet::ChunkData data;
+		data.pos.x = _pos.x * CHUNK_WIDTH;
+		data.pos.z = _pos.z * CHUNK_WIDTH;
+		data.compressedData = { 1, 2, 3, 4 };
+		std::promise<Packet::ChunkData> promise;
+		promise.set_value(std::move(data));
+		return promise.get_future().share();
+	};
+
+	std::promise<Packet::ChunkData> pendingPromise;
+	auto pendingFuture = pendingPromise.get_future().share();
+
+	std::vector<ChunkSender::PendingChunk> queue;
+	queue.push_back({ Int32_2{ 1, 0 }, makeReady({ 1, 0 }), {} });
+	queue.push_back({ Int32_2{ 2, 0 }, pendingFuture, {} });
+	queue.push_back({ Int32_2{ 3, 0 }, makeReady({ 3, 0 }), {} });
+	sender.inFlight[&session] = queue;
+
+	sender.Flush(session);
+	CHECK_EQ(sender.inFlight[&session].size(), size_t(1));
+	CHECK_EQ(sender.inFlight[&session][0].pos.x, 2);
+	CHECK_EQ(session.newlyFlushed.size(), size_t(2));
+	CHECK((session.newlyFlushed[0] == Int32_2{ 1, 0 }));
+	CHECK((session.newlyFlushed[1] == Int32_2{ 3, 0 }));
+	CHECK(session.stream.GetRawWriteBuffer().size() > 0);
+
+	// The retained job keeps its place and flushes once it becomes ready.
+	session.newlyFlushed.clear();
+	Packet::ChunkData data;
+	data.compressedData = { 5 };
+	pendingPromise.set_value(std::move(data));
+	sender.Flush(session);
+	CHECK(sender.inFlight[&session].empty());
+	CHECK_EQ(session.newlyFlushed.size(), size_t(1));
+	CHECK((session.newlyFlushed[0] == Int32_2{ 2, 0 }));
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1532,6 +1575,7 @@ std::vector<TestCase> Tests() {
 		{ "subregion_dedup", TestSubRegionDedup },
 		{ "block_change_dedup", TestBlockChangeDedup },
 		{ "chunk_sender_stationary_scan", TestChunkSenderStationaryScan },
+		{ "chunk_sender_flush_ordering", TestChunkSenderFlushOrdering },
 		{ "deferred_update_batch", TestDeferredUpdateBatch },
 		{ "torch_burnout_window", TestTorchBurnoutWindow },
 		{ "redstone_wire_decay", TestRedstoneWireDecay },
@@ -2033,6 +2077,53 @@ void RunBenchmarks() {
 			jobs += benchSender.tickSubRegions.size();
 		}
 		return jobs;
+	});
+
+	ChunkSender flushSender;
+	std::vector<ChunkSender::PendingChunk> flushPendingTemplate;
+	std::vector<std::shared_ptr<std::promise<Packet::ChunkData>>> flushNeverReady;
+	flushNeverReady.reserve(1024);
+	for (int i = 0; i < 1024; ++i) {
+		auto promise = std::make_shared<std::promise<Packet::ChunkData>>();
+		flushNeverReady.push_back(promise);
+		ChunkSender::PendingChunk pc;
+		pc.pos = { i, 0 };
+		pc.data = promise->get_future().share();
+		flushPendingTemplate.push_back(std::move(pc));
+	}
+	for (auto& session : benchSessions)
+		flushSender.inFlight[session.get()] = flushPendingTemplate;
+	Bench("chunk_sender_flush_pending_1024", 0, [&] {
+		size_t pending = 0;
+		for (auto& session : benchSessions) {
+			flushSender.Flush(*session);
+			pending += flushSender.inFlight[session.get()].size();
+		}
+		return pending;
+	});
+
+	Packet::ChunkData flushPayload;
+	flushPayload.compressedData.assign(1024, 0x5A);
+	std::vector<ChunkSender::PendingChunk> flushReadyTemplate;
+	for (int i = 0; i < 128; ++i) {
+		std::promise<Packet::ChunkData> promise;
+		promise.set_value(flushPayload);
+		ChunkSender::PendingChunk pc;
+		pc.pos = { i, 0 };
+		pc.data = promise.get_future().share();
+		flushReadyTemplate.push_back(std::move(pc));
+	}
+	Bench("chunk_sender_flush_ready_128", 0, [&] {
+		size_t bytes = 0;
+		for (auto& session : benchSessions) {
+			session->stream.ClearWriteBuffer();
+			session->flushedChunks.clear();
+			session->newlyFlushed.clear();
+			flushSender.inFlight[session.get()] = flushReadyTemplate;
+			flushSender.Flush(*session);
+			bytes += session->stream.GetRawWriteBuffer().size();
+		}
+		return bytes;
 	});
 
 	WorldManager scanWorld;
