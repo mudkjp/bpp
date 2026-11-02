@@ -489,6 +489,8 @@ void EntityTracker::DespawnEntityForViewers(EntityId _entityId, TrackedEntry& _e
 	pkt.entityId = _entityId;
 	NetworkStream scratch(-1);
 	pkt.Serialize(scratch);
+	if (!scratch.IsConnected())
+		return;
 	const auto& bytes = scratch.GetRawWriteBuffer();
 	for (EntityId viewerId : _entry.visibleTo) {
 		auto pSession = server->GetSessionById(viewerId);
@@ -505,6 +507,8 @@ void EntityTracker::SendPacketToPlayersInTrackedEntry(Packet::BasePacket& _pkt, 
 	// packet (including any string encoding) for every viewer.
 	NetworkStream scratch(-1);
 	_pkt.Serialize(scratch);
+	if (!scratch.IsConnected())
+		return;
 	const auto& bytes = scratch.GetRawWriteBuffer();
 	for (EntityId playerId : _trackedEntry.visibleTo) {
 		auto playerIt = trackedEntities.find(playerId);
@@ -521,6 +525,8 @@ void EntityTracker::SendPacketToAllPlayers(Packet::BasePacket& _pkt) {
 		return;
 	NetworkStream scratch(-1);
 	_pkt.Serialize(scratch);
+	if (!scratch.IsConnected())
+		return;
 	const auto& bytes = scratch.GetRawWriteBuffer();
 	for (auto& player : this->playerIds) {
 		auto session = server->GetSessionById(player);

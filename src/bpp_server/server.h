@@ -135,6 +135,8 @@ public:
 		reply.message = _message;
 		NetworkStream scratch(-1);
 		reply.Serialize(scratch);
+		if (!scratch.IsConnected())
+			return;
 		const auto& bytes = scratch.GetRawWriteBuffer();
 		for (auto& other : players) {
 			if (!other || other->connState != ConnectionState::Playing)

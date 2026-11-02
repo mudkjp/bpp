@@ -113,6 +113,8 @@ void ChatMessage(Packet::ChatMessage& _pkt, PlayerSession& _session,
 	// Serialize once, then fan the bytes out to every recipient.
 	NetworkStream scratch(-1);
 	reply.Serialize(scratch);
+	if (!scratch.IsConnected())
+		return;
 	const auto& bytes = scratch.GetRawWriteBuffer();
 	for (auto& receiver : _players) {
 		if (receiver->connState != ConnectionState::Playing)
