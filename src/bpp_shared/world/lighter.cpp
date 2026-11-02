@@ -20,17 +20,48 @@ const float BrightnessArray[16] = { 0.035f, 0.044f, 0.055f, 0.069f, 0.086f, 0.10
 void ChunkCache::Refresh(int _ncx, int _ncz, WorldManager& _world) {
 	if (_ncx == cx && _ncz == cz)
 		return;
+
+	auto fetch = [&](int _tcx, int _tcz) -> Chunk* {
+		Chunk* fetched = _world.GetChunkRaw({ _tcx, _tcz });
+		return (fetched && fetched->state.load(std::memory_order_acquire) >= ChunkState::Generated) ? fetched
+		                                                                                          : nullptr;
+	};
+
+	// Moving one chunk along an axis only introduces one new row/column;
+	// shift the cached pointers and fetch those three, rather than re-fetching
+	// all nine every time propagation crosses a chunk border.
+	if (_ncx == cx && _ncz == cz + 1) {
+		for (int dx = 0; dx < 3; ++dx) {
+			grid[dx][0] = grid[dx][1];
+			grid[dx][1] = grid[dx][2];
+			grid[dx][2] = fetch(_ncx + dx - 1, _ncz + 1);
+		}
+	} else if (_ncx == cx && _ncz == cz - 1) {
+		for (int dx = 0; dx < 3; ++dx) {
+			grid[dx][2] = grid[dx][1];
+			grid[dx][1] = grid[dx][0];
+			grid[dx][0] = fetch(_ncx + dx - 1, _ncz - 1);
+		}
+	} else if (_ncz == cz && _ncx == cx + 1) {
+		for (int dz = 0; dz < 3; ++dz) {
+			grid[0][dz] = grid[1][dz];
+			grid[1][dz] = grid[2][dz];
+			grid[2][dz] = fetch(_ncx + 1, _ncz + dz - 1);
+		}
+	} else if (_ncz == cz && _ncx == cx - 1) {
+		for (int dz = 0; dz < 3; ++dz) {
+			grid[2][dz] = grid[1][dz];
+			grid[1][dz] = grid[0][dz];
+			grid[0][dz] = fetch(_ncx - 1, _ncz + dz - 1);
+		}
+	} else {
+		for (int dx = -1; dx <= 1; ++dx)
+			for (int dz = -1; dz <= 1; ++dz)
+				grid[dx + 1][dz + 1] = fetch(_ncx + dx, _ncz + dz);
+	}
+
 	cx = _ncx;
 	cz = _ncz;
-	for (int dx = -1; dx <= 1; ++dx) {
-		for (int dz = -1; dz <= 1; ++dz) {
-			int tcx = _ncx + dx, tcz = _ncz + dz;
-			Chunk* fetched = _world.GetChunkRaw({ tcx, tcz });
-			Chunk* c = (fetched && fetched->state.load(std::memory_order_acquire) >= ChunkState::Generated) ? fetched
-			                                                                                                : nullptr;
-			grid[dx + 1][dz + 1] = c;
-		}
-	}
 }
 
 static inline int GetLightDirect(Chunk* _chunk, int _lx, int _y, int _lz, LightType _type) {
