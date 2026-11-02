@@ -12,9 +12,16 @@
 #include "platform/fs_compat.h"
 #include "platform/platform_caps.h"
 #include "utilities.h"
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
+#include <thread>
+#include <unordered_map>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -155,6 +162,7 @@ struct SaveManager {
 			Logger::Warning << "Failed to load " << necessaryFolders
 			                    << " necessary folder(s) for level " + _pSaveName + ".\n";
 
+		StartPlayerSaveWorker();
 		return LevelInitFailureReason::SUCCESS;
 	}
 
@@ -509,6 +517,65 @@ struct SaveManager {
 		return root;
 	}
 
+	// Queues player NBT for compression and disk I/O on the save worker.
+	// Re-queuing the same player before the next Pump replaces the payload,
+	// so one autosave interval produces at most one write per player.
+	void QueuePlayerNbtSave(std::string _playerName, Tag _playerData) {
+		std::lock_guard lock(playerSaveMutex);
+		pendingPlayerSaves.insert_or_assign(std::move(_playerName), std::move(_playerData));
+	}
+
+	// Hands the current pending batch to the worker. Called from the tick
+	// thread once per autosave interval.
+	void PumpPlayerSaves() {
+		{
+			std::lock_guard lock(playerSaveMutex);
+			if (pendingPlayerSaves.empty() || !playerSaveThread.joinable())
+				return;
+			playerSaveBatches.push_back(std::move(pendingPlayerSaves));
+			pendingPlayerSaves.clear();
+		}
+		playerSaveCv.notify_one();
+	}
+
+	// Writes everything queued so far and waits for the worker to finish.
+	void FlushPlayerSaves() {
+		while (true) {
+			PumpPlayerSaves();
+			std::unique_lock lock(playerSaveMutex);
+			if (!playerSaveThread.joinable()) {
+				auto batch = std::move(pendingPlayerSaves);
+				pendingPlayerSaves.clear();
+				lock.unlock();
+				for (auto& [name, tag] : batch) {
+					SavePlayerNbt(name, tag);
+					playerSaveWriteCount.fetch_add(1, std::memory_order_relaxed);
+				}
+				return;
+			}
+			playerSaveCv.wait(lock, [&] { return playerSaveBatches.empty() && !playerSaveBusy; });
+			if (pendingPlayerSaves.empty())
+				return;
+		}
+	}
+
+	size_t PendingPlayerSaves() const {
+		std::lock_guard lock(playerSaveMutex);
+		return pendingPlayerSaves.size();
+	}
+
+	uint64_t PlayerSaveWriteCount() const {
+		return playerSaveWriteCount.load(std::memory_order_relaxed);
+	}
+
+	void StartPlayerSaveWorker() {
+		std::lock_guard lock(playerSaveMutex);
+		if (playerSaveThread.joinable())
+			return;
+		playerSaveStop = false;
+		playerSaveThread = std::thread([this] { PlayerSaveWorker(); });
+	}
+
 	bool SavePlayerNbt(const std::string& _playerName, Tag& _playerData) const {
 		try {
 			// Check to see if we have a root compound tag
@@ -547,6 +614,14 @@ struct SaveManager {
 	}
 
 	void Release() {
+		FlushPlayerSaves();
+		{
+			std::lock_guard lock(playerSaveMutex);
+			playerSaveStop = true;
+		}
+		playerSaveCv.notify_all();
+		if (playerSaveThread.joinable())
+			playerSaveThread.join();
 		sessionLock.Release();
 		worldFile.reset();
 	}
@@ -555,8 +630,54 @@ struct SaveManager {
 		Release();
 	}
 
+	// Points the manager at an existing directory without initialising a level.
+	// Intended for tests and tools that only need player-data helpers.
+	void SetSaveDirectory(std::string _dir) {
+		saveDirectory = std::move(_dir);
+	}
+
 private:
 	std::string saveDirectory;
+
+	void PlayerSaveWorker() {
+		while (true) {
+			std::unordered_map<std::string, Tag> batch;
+			{
+				std::unique_lock lock(playerSaveMutex);
+				playerSaveCv.wait(lock, [&] { return playerSaveStop || !playerSaveBatches.empty(); });
+				if (playerSaveBatches.empty()) {
+					if (playerSaveStop)
+						return;
+					continue;
+				}
+				batch = std::move(playerSaveBatches.front());
+				playerSaveBatches.pop_front();
+				playerSaveBusy = true;
+			}
+
+			for (auto& [name, tag] : batch) {
+				SavePlayerNbt(name, tag);
+				playerSaveWriteCount.fetch_add(1, std::memory_order_relaxed);
+			}
+
+			{
+				std::lock_guard lock(playerSaveMutex);
+				playerSaveBusy = false;
+			}
+			playerSaveCv.notify_all();
+		}
+	}
+
+	mutable std::mutex playerSaveMutex;
+	std::condition_variable playerSaveCv;
+	std::unordered_map<std::string, Tag> pendingPlayerSaves;
+	std::deque<std::unordered_map<std::string, Tag>> playerSaveBatches;
+	std::thread playerSaveThread;
+	bool playerSaveStop = false;
+	bool playerSaveBusy = false;
+	std::atomic<uint64_t> playerSaveWriteCount{ 0 };
+
+public:
 	std::unique_ptr<FileHandle> worldFile;
 	bool levelBackupDone = false;
 	SessionLock sessionLock;

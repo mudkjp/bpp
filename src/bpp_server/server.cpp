@@ -858,13 +858,22 @@ void Server::Tick() {
 			if (session->connState != ConnectionState::WaitingForSpawnChunks &&
 			    session->connState != ConnectionState::Playing)
 				continue;
+			if (!session->entity) {
+				Logger::Error << "Failed to save player data for " << session->username << ": no entity!\n";
+				continue;
+			}
+			// Serialising reads live entity/inventory state, so it stays on the
+			// tick thread. Compression and disk I/O run on the save worker.
 			auto saveStart = Clock::now();
-			SavePlayer(*session);
+			auto savedNbt = session->SerializeToNbt();
+			gameRuntime.saveManager.QueuePlayerNbtSave(session->username, std::move(savedNbt));
 			const auto saveElapsed = Clock::now() - saveStart;
 			autosaveElapsed += saveElapsed;
 			if (sampling)
 				tickProfiler.Record(TickTask::Autosave, saveElapsed);
 		}
+		// Hand the coalesced batch to the worker for async compression/write.
+		gameRuntime.saveManager.PumpPlayerSaves();
 	}
 	const auto networkInputElapsed = Clock::now() - networkStart - autosaveElapsed;
 	auto inventoryStart = Clock::now();

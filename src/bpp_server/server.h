@@ -78,7 +78,10 @@ public:
 			return;
 		}
 		auto savedNbt = _session.SerializeToNbt();
-		gameRuntime.saveManager.SavePlayerNbt(_session.username, savedNbt);
+		// Queue + flush keeps the disconnect/shutdown save synchronous while
+		// ordering it after any autosave the worker is still writing.
+		gameRuntime.saveManager.QueuePlayerNbtSave(_session.username, std::move(savedNbt));
+		gameRuntime.saveManager.FlushPlayerSaves();
 	}
 
 	void SavePlayer(const std::string& _username) {
