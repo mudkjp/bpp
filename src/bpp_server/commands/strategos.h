@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <expected>
 #include <format>
@@ -351,9 +352,9 @@ public:
 				                                  .position = token_idx });
 			}
 
-			auto [matched_node, consumed] = find_matching_child(*current, tokens, token_idx);
+			auto match = find_matching_child(*current, tokens, token_idx, cmdline);
 
-			if (!matched_node) {
+			if (!match.node) {
 				if (lacksOperator())
 					return operatorError();
 				return std::unexpected(
@@ -364,22 +365,23 @@ public:
 			}
 
 			auto& cmd_node = cmd_ctx.emplace_back();
-			cmd_node.node = matched_node;
+			cmd_node.node = match.node;
 
 			// Privilege check as soon as the command is identified, before syntax errors.
 			if (lacksOperator())
 				return operatorError();
 
-			if (!parse_node_value(*matched_node, tokens, token_idx, consumed, cmdline, cmd_node.data)) {
+			if (!match.valueValid) {
 				return std::unexpected(ErrorInfo{ .error = ParseError::InvalidToken,
-				                                  .message = std::format("Invalid value for '{}'", matched_node->name),
+				                                  .message = std::format("Invalid value for '{}'", match.node->name),
 				                                  .position = token_idx });
 			}
+			cmd_node.data = std::move(match.data);
 
 			cmd_ctx[cmd_ctx.size() - 2].next = &cmd_node;
 
-			current = matched_node;
-			token_idx += 1 + consumed;
+			current = match.node;
+			token_idx += 1 + match.consumed;
 		}
 
 		if (lacksOperator())
@@ -404,26 +406,24 @@ private:
 		const Node* current = &root;
 		size_t index = 0;
 		while (index < completed) {
-			auto [node, consumed] = find_matching_child(*current, tokens.first(completed), index);
-			if (!node)
+			auto match = find_matching_child(*current, tokens.first(completed), index);
+			if (!match.node)
 				return output;
-			if (node->type == NodeType::Vec3 && consumed != 2)
+			if (match.node->type == NodeType::Vec3 && match.consumed != 2)
 				return output;
-			if (node->type == NodeType::GreedyString && node->suggestionSource == SuggestionSource::NestedCommand) {
+			if (match.node->type == NodeType::GreedyString &&
+			    match.node->suggestionSource == SuggestionSource::NestedCommand) {
 				if (depth < 16)
 					return suggest_nested(tokens.subspan(index), offsets.subspan(index), completed - index, prefix,
 					                      replaceStart, canOperate, players, depth + 1);
 				return output;
 			}
-			if (node->type != NodeType::GreedyString) {
-				CmdNodeData ignored;
-				if (!parse_node_value(*node, tokens.first(completed), index, consumed, {}, ignored))
-					return output;
-			}
-			if (index == 0 && node->requiresOperator && !canOperate)
+			if (match.node->type != NodeType::GreedyString && !match.valueValid)
 				return output;
-			current = node;
-			index += 1 + consumed;
+			if (index == 0 && match.node->requiresOperator && !canOperate)
+				return output;
+			current = match.node;
+			index += 1 + match.consumed;
 		}
 
 		for (const auto& child : current->children) {
@@ -511,18 +511,35 @@ private:
 		return tokens;
 	}
 
+	struct ChildMatch {
+		const Node* node = nullptr;
+		size_t consumed = 0;
+		CmdNodeData data;
+		bool valueValid = true;
+	};
+
 	[[nodiscard]] static auto find_matching_child(const Node& parent, std::span<const std::string_view> tokens,
-	                                              size_t token_idx) -> std::pair<const Node*, size_t> {
+	                                              size_t token_idx, std::string_view original = {}) -> ChildMatch {
 		const auto& token = tokens[token_idx];
 
 		for (const auto& child : parent.children) {
-			if (matches_node_type(child, token)) {
-				size_t consumed = get_consumed_tokens(child, tokens, token_idx);
-				return { &child, consumed };
-			}
+			if (!matches_node_type(child, token))
+				continue;
+
+			ChildMatch match;
+			match.node = &child;
+			match.consumed = get_consumed_tokens(child, tokens, token_idx);
+			// Parse the typed value once here and hand it to the caller. The
+			// old code validated the token during matching and parsed it again
+			// afterwards. Greedy strings need the original command line, which
+			// the suggestion path does not have (and does not need).
+			if (child.type != NodeType::GreedyString || !original.empty())
+				match.valueValid =
+				    parse_node_value(child, tokens, token_idx, match.consumed, original, match.data);
+			return match;
 		}
 
-		return { nullptr, 0 };
+		return {};
 	}
 
 	[[nodiscard]] static auto matches_node_type(const Node& node, std::string_view token) -> bool {
@@ -660,31 +677,47 @@ private:
 		if (token.empty())
 			return std::nullopt;
 
-		size_t pos = 0;
-		if (token[0] == '-' || token[0] == '+') {
-			pos = 1;
-		}
-
-		if (pos >= token.size())
-			return std::nullopt;
-
-		for (size_t i = pos; i < token.size(); ++i) {
-			if (!std::isdigit(static_cast<unsigned char>(token[i]))) {
+#if defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L
+		const char* first = token.data();
+		const char* last = first + token.size();
+		// from_chars does not accept a leading plus sign, stoi did.
+		if (*first == '+') {
+			++first;
+			if (first == last)
 				return std::nullopt;
-			}
 		}
-
+		int value = 0;
+		const auto [ptr, ec] = std::from_chars(first, last, value);
+		if (ec != std::errc{} || ptr != last)
+			return std::nullopt;
+		return value;
+#else
 		try {
 			return std::stoi(std::string(token));
 		} catch (...) {
 			return std::nullopt;
 		}
+#endif
 	}
 
 	[[nodiscard]] static auto parse_float(std::string_view token) -> std::optional<float> {
 		if (token.empty())
 			return std::nullopt;
 
+#if defined(__cpp_lib_to_chars) && __cpp_lib_to_chars >= 201611L
+		const char* first = token.data();
+		const char* last = first + token.size();
+		if (*first == '+') {
+			++first;
+			if (first == last)
+				return std::nullopt;
+		}
+		float value = 0.0f;
+		const auto [ptr, ec] = std::from_chars(first, last, value);
+		if (ec != std::errc{} || ptr != last)
+			return std::nullopt;
+		return value;
+#else
 		try {
 			size_t pos = 0;
 			float val = std::stof(std::string(token), &pos);
@@ -692,6 +725,7 @@ private:
 		} catch (...) {
 			return std::nullopt;
 		}
+#endif
 	}
 
 	[[nodiscard]] static auto validate_vec3_component(std::string_view token) -> bool {
