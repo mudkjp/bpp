@@ -78,6 +78,16 @@ private:
 	// Positions currently in ChunkState::Loading. DrainLoadQueue only has to
 	// visit in-flight loads instead of scanning every chunk in the world.
 	std::unordered_set<Int32_2> loadingChunks;
+	// Cached random-tick candidate positions. Rebuilt only when a player's
+	// chunk or the simulation radius changes; chunk state is filtered per tick
+	// so newly populated chunks start ticking without a rebuild.
+	std::vector<Int32_2> randomTickCandidates;
+	std::unordered_set<Int32_2> randomTickSeen;
+	std::vector<Int32_2> cachedRandomTickPlayerChunks;
+	int cachedRandomTickDistance = -1;
+	bool randomTickCacheValid = false;
+	size_t randomTickRebuildCount = 0;
+	void RebuildRandomTickCandidates(const std::vector<ClientPosition>& _players);
 	std::unordered_map<Int32_2, std::vector<std::pair<Int3, Block>>> pendingBleedWrites;
 	std::mutex genDoneMutex;
 	std::deque<std::shared_ptr<Chunk>> genDoneQueue;
@@ -423,6 +433,12 @@ public:
 	}
 	size_t PopulateFrontierCount() const {
 		return populateFrontier.size();
+	}
+	size_t RandomTickCandidateCount() const {
+		return randomTickCandidates.size();
+	}
+	size_t RandomTickRebuildCount() const {
+		return randomTickRebuildCount;
 	}
 
 	void TrackUnloadedChunk(Int32_2 _pos) {

@@ -477,30 +477,71 @@ void WorldManager::Tick(const std::vector<ClientPosition>& _players, bool _advan
 		_profiler->Record(TickTask::ChunkLoading, Clock::now() - pipelineStart);
 }
 
-void WorldManager::PerformRandomTicks(const std::vector<ClientPosition>& _players) {
-	// Build our active set here
-	// Adjusted base on the simulation distance
-	int simulationDist = this->GetSimulationDistance();
-	int simulationWidth = (simulationDist * 2) + 1;
-	std::unordered_map<Int2, Chunk*> wanted;
-	wanted.reserve(_players.size() * int64_t(simulationWidth * simulationWidth));
-	for (auto& player : _players) {
-		auto anchor = player.GetChunkPos();
-		for (int dx = -simulationDist; dx <= simulationDist; dx++) {
-			for (int dz = -simulationDist; dz <= simulationDist; dz++) {
-				Int2 chunkPos = { dx + anchor.x, dz + anchor.z };
-				auto chunk = GetChunkRaw(chunkPos);
-				if (chunk && chunk->state.load() == ChunkState::Populated)
-					wanted[chunkPos] = chunk;
+void WorldManager::RebuildRandomTickCandidates(const std::vector<ClientPosition>& _players) {
+	const int simulationDist = GetSimulationDistance();
+	const int simulationWidth = (simulationDist * 2) + 1;
+	randomTickCandidates.clear();
+
+	if (_players.size() == 1) {
+		// Single player: no overlap to deduplicate, so skip the hash set.
+		const auto anchor = _players[0].GetChunkPos();
+		randomTickCandidates.reserve(size_t(simulationWidth * simulationWidth));
+		for (int dx = -simulationDist; dx <= simulationDist; dx++)
+			for (int dz = -simulationDist; dz <= simulationDist; dz++)
+				randomTickCandidates.push_back({ dx + anchor.x, dz + anchor.z });
+	} else {
+		// Reuse the scratch set across rebuilds instead of allocating one.
+		randomTickSeen.clear();
+		randomTickSeen.reserve(_players.size() * size_t(simulationWidth * simulationWidth));
+		for (auto& player : _players) {
+			auto anchor = player.GetChunkPos();
+			for (int dx = -simulationDist; dx <= simulationDist; dx++) {
+				for (int dz = -simulationDist; dz <= simulationDist; dz++) {
+					Int32_2 chunkPos = { dx + anchor.x, dz + anchor.z };
+					if (randomTickSeen.insert(chunkPos).second)
+						randomTickCandidates.push_back(chunkPos);
+				}
 			}
 		}
 	}
 
-	for (auto& [cpos, chunk] : wanted) {
+	cachedRandomTickPlayerChunks.clear();
+	cachedRandomTickPlayerChunks.reserve(_players.size());
+	for (const auto& player : _players)
+		cachedRandomTickPlayerChunks.push_back(player.GetChunkPos());
+	cachedRandomTickDistance = simulationDist;
+	randomTickCacheValid = true;
+	++randomTickRebuildCount;
+}
+
+void WorldManager::PerformRandomTicks(const std::vector<ClientPosition>& _players) {
+	const int simulationDist = GetSimulationDistance();
+	bool rebuild =
+	    !randomTickCacheValid || cachedRandomTickDistance != simulationDist ||
+	    cachedRandomTickPlayerChunks.size() != _players.size();
+	if (!rebuild) {
+		for (size_t i = 0; i < _players.size(); ++i) {
+			if (cachedRandomTickPlayerChunks[i] != _players[i].GetChunkPos()) {
+				rebuild = true;
+				break;
+			}
+		}
+	}
+	if (rebuild)
+		RebuildRandomTickCandidates(_players);
+
+	// Weather cannot change while random ticks run, so resolve it once.
+	const bool raining = weatherSystem.IsRaining();
+	const bool thundering = raining && weatherSystem.IsThundering();
+
+	for (const Int32_2& cpos : randomTickCandidates) {
+		Chunk* chunk = GetChunkRaw(cpos);
+		if (!chunk || chunk->state.load() != ChunkState::Populated)
+			continue;
 		Int2 chunkOrigin = { cpos.x * 16, cpos.z * 16 };
 
 		// Lightning
-		if (rand.NextInt(100000) == 0 && weatherSystem.IsRaining() && weatherSystem.IsThundering()) {
+		if (rand.NextInt(100000) == 0 && raining && thundering) {
 			distHashCounter = distHashCounter * 3 + 1013904223;
 			uint32_t r = distHashCounter >> 2;
 			int lx = int(r & 15);
@@ -522,22 +563,23 @@ void WorldManager::PerformRandomTicks(const std::vector<ClientPosition>& _player
 			int lz = int((r >> 8) & 15);
 			Int2 column = { chunkOrigin.x + lx, chunkOrigin.z + lz };
 
-			// y is the block above the top block
-			int y = FindTopSolidBlock(column.x, column.z);
-			if (y >= 0 && y < CHUNK_HEIGHT && BiomeGenerator::BiomeHasSnow(GetBiome(column)) &&
-			    chunk->GetBlockLight({ lx, y, lz }) < 10) {
-				Int3 top = { column.x, y, column.z };
-				Int3 below = { column.x, y - 1, column.z };
-				BlockType atId = chunk->GetBlock({ lx, y, lz });
-				BlockType belowId = chunk->GetBlock({ lx, y - 1, lz });
-				const auto& belowProps = Blocks::blockProperties[belowId];
+			// Reject warm biomes before walking the whole column.
+			if (BiomeGenerator::BiomeHasSnow(GetBiome(column))) {
+				int y = FindTopSolidBlock(column.x, column.z);
+				if (y >= 0 && y < CHUNK_HEIGHT && chunk->GetBlockLight({ lx, y, lz }) < 10) {
+					Int3 top = { column.x, y, column.z };
+					Int3 below = { column.x, y - 1, column.z };
+					BlockType atId = chunk->GetBlock({ lx, y, lz });
+					BlockType belowId = chunk->GetBlock({ lx, y - 1, lz });
+					const auto& belowProps = Blocks::blockProperties[belowId];
 
-				if (weatherSystem.IsRaining() && atId == BLOCK_AIR && belowId != BLOCK_AIR && belowId != BLOCK_ICE &&
-				    belowProps.isOpaqueCube && belowProps.material.isSolid)
-					SetBlock(top, BLOCK_SNOW_LAYER);
+					if (raining && atId == BLOCK_AIR && belowId != BLOCK_AIR && belowId != BLOCK_ICE &&
+					    belowProps.isOpaqueCube && belowProps.material.isSolid)
+						SetBlock(top, BLOCK_SNOW_LAYER);
 
-				if (belowId == BLOCK_WATER_STILL && chunk->GetMeta({ lx, y - 1, lz }) == 0)
-					SetBlock(below, BLOCK_ICE);
+					if (belowId == BLOCK_WATER_STILL && chunk->GetMeta({ lx, y - 1, lz }) == 0)
+						SetBlock(below, BLOCK_ICE);
+				}
 			}
 		}
 
@@ -838,6 +880,7 @@ void WorldManager::SeedChunkLighting(Int32_2 _pos) {
 void WorldManager::RebuildUnloadedCandidates() {
 	unloadedChunkIndex.clear();
 	loadingChunks.clear();
+	randomTickCacheValid = false;
 	for (const auto& [pos, chunk] : chunks) {
 		if (!chunk)
 			continue;
@@ -1498,6 +1541,7 @@ void WorldManager::InitSpawn() {
 	unloadedChunkIndex.clear();
 	populateFrontier.clear();
 	loadingChunks.clear();
+	randomTickCacheValid = false;
 	InvalidateChunkInterest();
 	InvalidateChunkCache();
 }
