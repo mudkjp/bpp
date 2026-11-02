@@ -26,6 +26,7 @@
 #include "nbt/nbt.h"
 #include "networking/network_stream.h"
 #include "numeric_structs.h"
+#include "pathfinding/pathfinder.h"
 #include "strings/ucs2.h"
 #include "subchunk.h"
 #include "world/generator/overworld/chunk_gen.h"
@@ -997,6 +998,18 @@ void RunBenchmarks() {
 	Bench("chunk_skylight_map", CHUNK_VOLUME, [&] {
 		skylit.GenerateSkylightMap();
 		return size_t(skylit.GetSkyLight({ 8, 64, 8 }));
+	});
+
+	WorldManager pathWorld;
+	auto pathChunk = std::make_shared<Chunk>();
+	pathChunk->cpos = { 0, 0 };
+	pathChunk->state.store(ChunkState::Generated);
+	pathChunk->FillSlices(0, 3, BLOCK_STONE);
+	pathWorld.chunks[Int32_2{ 0, 0 }] = pathChunk;
+	Pathfinder pathfinder(&pathWorld);
+	Bench("pathfinder_flat", 16 * 16, [&] {
+		auto path = pathfinder.FindPath({ 2, 4, 2 }, { 13, 4, 13 }, 0.6f, 1.8f, 20.0f);
+		return path.size();
 	});
 
 	TempDir temp("region-bench");
