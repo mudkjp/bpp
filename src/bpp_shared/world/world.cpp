@@ -804,6 +804,31 @@ void WorldManager::SeedChunkLighting(Int32_2 _pos) {
 }
 
 void WorldManager::UpdateLoadRadius(const std::vector<ClientPosition>& _players) {
+	// A stationary player has the same chunk-interest set every tick. Rebuilding
+	// it allocates and hashes the whole view square for no benefit.
+	bool sameInterest = chunkInterestCacheValid && cachedPlayerChunks.size() == _players.size();
+	if (sameInterest) {
+		for (size_t i = 0; i < _players.size(); ++i) {
+			const int viewDist =
+			    _players[i].viewDistanceOverride ? _players[i].viewDistanceOverride : viewRadius;
+			if (cachedPlayerChunks[i] != _players[i].GetChunkPos() || cachedViewDistances[i] != viewDist) {
+				sameInterest = false;
+				break;
+			}
+		}
+	}
+	if (sameInterest)
+		return;
+
+	cachedPlayerChunks.resize(_players.size());
+	cachedViewDistances.resize(_players.size());
+	for (size_t i = 0; i < _players.size(); ++i) {
+		cachedPlayerChunks[i] = _players[i].GetChunkPos();
+		cachedViewDistances[i] =
+		    _players[i].viewDistanceOverride ? _players[i].viewDistanceOverride : viewRadius;
+	}
+	chunkInterestCacheValid = true;
+
 	std::unordered_set<Int32_2> wanted;
 	const size_t viewSide = size_t(viewRadius) * 2 + 1;
 	const size_t viewArea = viewSide * viewSide;
@@ -1405,6 +1430,7 @@ void WorldManager::InitSpawn() {
 	}
 	this->spawnPoint = { sx, 64, sz };
 	chunks.clear(); // Clear all chunks so we can start fresh from the spawn area
+	chunkInterestCacheValid = false;
 	InvalidateChunkCache();
 }
 

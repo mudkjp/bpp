@@ -61,6 +61,11 @@ class WorldManager : public WorldAccess {
 private:
 	Int32_2 lastChunkPos = { 0, 0 };
 	std::shared_ptr<Chunk>* lastChunkSlot = nullptr;
+	// Last player chunk positions / view distances used by UpdateLoadRadius.
+	// Keeps stationary players from rebuilding the full interest set each tick.
+	std::vector<Int32_2> cachedPlayerChunks;
+	std::vector<int> cachedViewDistances;
+	bool chunkInterestCacheValid = false;
 	std::unordered_map<Int32_2, std::vector<std::pair<Int3, Block>>> pendingBleedWrites;
 	std::mutex genDoneMutex;
 	std::deque<std::shared_ptr<Chunk>> genDoneQueue;
