@@ -96,6 +96,11 @@ public:
 	// Process up to `maxIterations` light-queue entries this call.
 	bool ProcessLightQueue(WorldManager& _world, int _maxIterations = INT_MAX);
 
+	// Number of currently queued light updates (diagnostics/tests).
+	size_t PendingLightUpdates() const {
+		return lightQueue.size();
+	}
+
 	// Schedule a single-block update; bypasses merge (used for BFS fan-out).
 	void ScheduleLightUpdate(Int3 _pos, LightType _type) {
 		if (_pos.y < 0 || _pos.y >= CHUNK_HEIGHT)
