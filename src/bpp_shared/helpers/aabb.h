@@ -6,6 +6,7 @@
 */
 
 #pragma once
+#include <array>
 #include <vector>
 
 struct AABBIntercept {
@@ -143,8 +144,47 @@ struct AABB {
 };
 
 // A collision shape is basically a container of AABB's, used for blocks like stairs and to generate the swept volume of an entity's movement.
+struct CollisionBoxList {
+	static constexpr size_t INLINE_CAPACITY = 2;
+
+	std::array<AABB, INLINE_CAPACITY> inlineBoxes{};
+	std::vector<AABB> overflow;
+	size_t count = 0;
+
+	void push_back(const AABB& _box) {
+		if (count < INLINE_CAPACITY)
+			inlineBoxes[count++] = _box;
+		else
+			overflow.push_back(_box);
+	}
+
+	void reserve(size_t _size) {
+		if (_size > INLINE_CAPACITY)
+			overflow.reserve(_size - INLINE_CAPACITY);
+	}
+
+	void clear() {
+		count = 0;
+		overflow.clear();
+	}
+
+	size_t size() const {
+		return count + overflow.size();
+	}
+	bool empty() const {
+		return size() == 0;
+	}
+
+	AABB& operator[](size_t _index) {
+		return _index < INLINE_CAPACITY ? inlineBoxes[_index] : overflow[_index - INLINE_CAPACITY];
+	}
+	const AABB& operator[](size_t _index) const {
+		return _index < INLINE_CAPACITY ? inlineBoxes[_index] : overflow[_index - INLINE_CAPACITY];
+	}
+};
+
 struct CollisionShape {
-	std::vector<AABB> boxes;
+	CollisionBoxList boxes;
 
 	void Add(const AABB& _box) {
 		boxes.push_back(_box);
@@ -153,22 +193,22 @@ struct CollisionShape {
 	CollisionShape Offset(double _dx, double _dy, double _dz) const {
 		CollisionShape result;
 		result.boxes.reserve(boxes.size());
-		for (const auto& box : boxes)
-			result.boxes.push_back(box.Offset(_dx, _dy, _dz));
+		for (size_t i = 0; i < boxes.size(); ++i)
+			result.boxes.push_back(boxes[i].Offset(_dx, _dy, _dz));
 		return result;
 	}
 
 	bool Intersects(const CollisionShape& _other) const {
-		for (const auto& box1 : boxes)
-			for (const auto& box2 : _other.boxes)
-				if (box1.Intersects(box2))
+		for (size_t i = 0; i < boxes.size(); ++i)
+			for (size_t j = 0; j < _other.boxes.size(); ++j)
+				if (boxes[i].Intersects(_other.boxes[j]))
 					return true;
 		return false;
 	}
 
 	bool Intersects(const AABB& _other) const {
-		for (const auto& box1 : boxes) {
-			if (box1.Intersects(_other)) {
+		for (size_t i = 0; i < boxes.size(); ++i) {
+			if (boxes[i].Intersects(_other)) {
 				return true;
 			}
 		}
@@ -176,8 +216,8 @@ struct CollisionShape {
 	}
 
 	bool PointIntersects(const Vec3& _vec) const {
-		for (const auto& box1 : boxes) {
-			if (box1.PointIntersects(_vec)) {
+		for (size_t i = 0; i < boxes.size(); ++i) {
+			if (boxes[i].PointIntersects(_vec)) {
 				return true;
 			}
 		}
@@ -188,7 +228,8 @@ struct CollisionShape {
 		if (boxes.empty())
 			return std::nullopt;
 		AABB bounds = boxes[0];
-		for (const auto& box : boxes) {
+		for (size_t i = 0; i < boxes.size(); ++i) {
+			const AABB& box = boxes[i];
 			bounds.minX = std::min(bounds.minX, box.minX);
 			bounds.minY = std::min(bounds.minY, box.minY);
 			bounds.minZ = std::min(bounds.minZ, box.minZ);
@@ -202,26 +243,26 @@ struct CollisionShape {
 	CollisionShape Expand(double _dx, double _dy, double _dz) const {
 		CollisionShape result;
 		result.boxes.reserve(boxes.size());
-		for (const auto& box : boxes)
-			result.boxes.push_back(box.Expand(_dx, _dy, _dz));
+		for (size_t i = 0; i < boxes.size(); ++i)
+			result.boxes.push_back(boxes[i].Expand(_dx, _dy, _dz));
 		return result;
 	}
 
 	double CalculateXOffset(const AABB& _entity, double _dx) const {
-		for (const auto& box : boxes)
-			_dx = box.CalculateXOffset(_entity, _dx);
+		for (size_t i = 0; i < boxes.size(); ++i)
+			_dx = boxes[i].CalculateXOffset(_entity, _dx);
 		return _dx;
 	}
 
 	double CalculateYOffset(const AABB& _entity, double _dy) const {
-		for (const auto& box : boxes)
-			_dy = box.CalculateYOffset(_entity, _dy);
+		for (size_t i = 0; i < boxes.size(); ++i)
+			_dy = boxes[i].CalculateYOffset(_entity, _dy);
 		return _dy;
 	}
 
 	double CalculateZOffset(const AABB& _entity, double _dz) const {
-		for (const auto& box : boxes)
-			_dz = box.CalculateZOffset(_entity, _dz);
+		for (size_t i = 0; i < boxes.size(); ++i)
+			_dz = boxes[i].CalculateZOffset(_entity, _dz);
 		return _dz;
 	}
 

@@ -347,8 +347,8 @@ std::vector<AABB> WorldManager::GetCollidingBoundingBoxes(const AABB& _area, Ent
 				}
 
 				const CollisionShape& collider = Blocks::colliderTable[blockId](blockMeta);
-				for (const auto& box : collider.boxes) {
-					const AABB offset = box.Offset(x, y, z);
+				for (size_t i = 0; i < collider.boxes.size(); ++i) {
+					const AABB offset = collider.boxes[i].Offset(x, y, z);
 					if (offset.Intersects(_area))
 						collidingBoxes.push_back(offset);
 				}
