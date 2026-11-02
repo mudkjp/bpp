@@ -19,8 +19,7 @@ static constexpr ItemKey NormalizeItemMetadata(ItemKey _key) noexcept {
 	return _key;
 }
 
-void RecipeManager::AddShapelessRecipe(std::span<const ItemKey> _items, ItemStack _output) {
-	auto [it, inserted] = shapelessRecipes.try_emplace(MakeShapelessKey(_items), _output);
+void RecipeManager::AddShapelessRecipe(std::span<const ItemKey> _items, ItemStack _output) {	auto [it, inserted] = shapelessRecipes.try_emplace(MakeShapelessKey(_items), _output);
 
 	[[unlikely]]
 	if (!inserted) {
@@ -28,6 +27,8 @@ void RecipeManager::AddShapelessRecipe(std::span<const ItemKey> _items, ItemStac
 		Logger::Warning << "Overwriting existing shapeless recipe for output item " << _output << "\n";
 	}
 }
+
+static void MirrorGrid(std::array<ItemKey, 9>& _grid, UInt8_2 _size);
 
 // The space character ' ' is reserved for empty slots
 void RecipeManager::AddShapedRecipe(std::initializer_list<std::string_view> _rows,
@@ -77,6 +78,14 @@ void RecipeManager::AddShapedRecipe(std::initializer_list<std::string_view> _row
 		it->second = _output;
 		Logger::Warning << "Overwriting existing shaped recipe for output item " << _output << "\n";
 	}
+
+	// Store the mirrored orientation too, so MatchGrid only has to do one
+	// lookup for either orientation. The stored cells stay in the orientation
+	// of the key, which is what FinishCraft consumes.
+	std::array<ItemKey, 9> mirrored = grid;
+	MirrorGrid(mirrored, { 3, 3 });
+	if (mirrored != grid)
+		shapedRecipes.try_emplace(MakeShapedKey(mirrored, { 3, 3 }), _output);
 }
 
 static void MirrorGrid(std::array<ItemKey, 9>& _grid, UInt8_2 _size) {
@@ -101,23 +110,6 @@ const std::pair<const std::array<ItemKey, 9>, ItemStack> RecipeManager::MatchGri
 
 		if (shaped != shapedRecipes.end())
 			return { shaped->first.cells, shaped->second };
-	}
-
-	{
-		//TODO: Maybe instead of doing a second lookup for the mirrored version
-		// Make mirroring part of normalization in MakeShapedKey()
-		// So based on comparison using ShapedRecipeKey < operator (lexicographical compare),
-		// choose either the mirrored version or the plain version as the key
-		// This way we would only require 1 hashmap lookup for shaped recipes
-		MirrorGrid(keyGrid, _size);
-
-		auto shaped = shapedRecipes.find(MakeShapedKey(std::span<const ItemKey>(keyGrid.data(), totalSize), _size));
-
-		if (shaped != shapedRecipes.end()) {
-			auto originalKeyCopy = shaped->first.cells;
-			MirrorGrid(originalKeyCopy, _size);
-			return { originalKeyCopy, shaped->second };
-		}
 	}
 
 	{
