@@ -322,7 +322,6 @@ std::vector<AABB> WorldManager::GetCollidingBoundingBoxes(const AABB& _area, Ent
 				if (!Blocks::blockProperties[blockId].isCollidable)
 					continue;
 				uint8_t blockMeta = chunk->GetMeta({ localX, y, localZ });
-				CollisionShape worldCollider;
 				if (blockId == BLOCK_PISTON_MOVING) {
 					// Moving pistons get a special case
 					// They use a full block collider instead of the multi segment collider
@@ -336,10 +335,23 @@ std::vector<AABB> WorldManager::GetCollidingBoundingBoxes(const AABB& _area, Ent
 						collidingBoxes.push_back(*box);
 					continue;
 				}
-				worldCollider = Blocks::blockBehaviors[blockId].getCollider(blockMeta).Offset(x, y, z);
-				for (auto& box : worldCollider.boxes)
+
+				// Most blocks use the plain unit-cube collider. Handle that
+				// directly instead of allocating a CollisionShape and an
+				// offset copy for every solid voxel touched by the sweep.
+				if (Blocks::blockBehaviors[blockId].getCollider == Blocks::DefaultCollider) {
+					const AABB box{ double(x), double(y), double(z), double(x + 1), double(y + 1), double(z + 1) };
 					if (box.Intersects(_area))
 						collidingBoxes.push_back(box);
+					continue;
+				}
+
+				const CollisionShape& collider = Blocks::blockBehaviors[blockId].getCollider(blockMeta);
+				for (const auto& box : collider.boxes) {
+					const AABB offset = box.Offset(x, y, z);
+					if (offset.Intersects(_area))
+						collidingBoxes.push_back(offset);
+				}
 			}
 		}
 	}
@@ -668,7 +680,9 @@ void WorldManager::DrainGenQueue() {
 				pendingBleedWrites.erase(pit);
 			}
 
-			it->second->GenerateSkylightMap();         // Regen our skylight map
+			// The generator already built the heightmap and skylight map on
+			// its worker thread. Rebuilding them here would do the same full
+			// 32K-voxel pass again on the tick thread.
 			this->SeedChunkLighting(it->second->cpos); // Reseed our lighting
 		}
 	}
@@ -752,15 +766,39 @@ void WorldManager::SeedChunkLighting(Int32_2 _pos) {
 		}
 	}
 
-	// Determine Block light emitters
-	for (int8_t i = BLOCK_AIR; i < BLOCK_MAX; ++i) {
-		if (Blocks::blockProperties[i].lightEmission <= 0)
-			continue;
-		if (!chunk->HasBlock(BlockType(i)))
-			continue;
-		// Schedule light updates for all of those
-		for (const auto& pos : chunk->FindBlocks(BlockType(i)))
-			lightManager.ScheduleLightUpdate(pos, LightType::Block);
+	// Determine block light emitters in one pass over the chunk. Scanning all
+	// emitting types separately meant one full 32K-voxel walk per type, and
+	// FindBlocks() returns chunk-local x/z, so emitters used to be scheduled
+	// near the origin instead of at their world position.
+	bool hasEmitter = false;
+	for (int i = 1; i < BLOCK_MAX; ++i) {
+		if (Blocks::blockProperties[i].lightEmission > 0 && chunk->HasBlock(BlockType(i))) {
+			hasEmitter = true;
+			break;
+		}
+	}
+	if (hasEmitter) {
+		for (int s = 0; s < SUB_CHUNK_COUNT; ++s) {
+			const SubChunk& sub = chunk->subChunks[size_t(s)];
+			if (sub.blocks) {
+				for (int i = 0; i < SubChunk::VOLUME; ++i) {
+					const BlockType block = sub.blocks->types[size_t(i)];
+					if (Blocks::blockProperties[block].lightEmission <= 0)
+						continue;
+					const int lx = i & (SUB_CHUNK_SIZE - 1);
+					const int ly = s * SUB_CHUNK_SIZE + (i >> 8);
+					const int lz = (i >> 4) & (SUB_CHUNK_SIZE - 1);
+					lightManager.ScheduleLightUpdate({ bx + lx, ly, bz + lz }, LightType::Block);
+				}
+			} else if (Blocks::blockProperties[sub.blockFill].lightEmission > 0) {
+				for (int i = 0; i < SubChunk::VOLUME; ++i) {
+					const int lx = i & (SUB_CHUNK_SIZE - 1);
+					const int ly = s * SUB_CHUNK_SIZE + (i >> 8);
+					const int lz = (i >> 4) & (SUB_CHUNK_SIZE - 1);
+					lightManager.ScheduleLightUpdate({ bx + lx, ly, bz + lz }, LightType::Block);
+				}
+			}
+		}
 	}
 	PropagateChunkLightBorders(_pos);
 }
@@ -1368,6 +1406,10 @@ void WorldManager::InitSpawn() {
 }
 
 void WorldManager::PropagateChunkLightBorders(Int32_2 _cpos) {
+	Chunk* chunk = GetChunkRaw(_cpos);
+	if (!chunk)
+		return;
+
 	// Iterate through our chunk borders
 	const Cardinal::Value dirs[4] = { Cardinal::Value::West, Cardinal::Value::East, Cardinal::Value::North,
 		                               Cardinal::Value::South };
@@ -1410,15 +1452,16 @@ void WorldManager::PropagateChunkLightBorders(Int32_2 _cpos) {
 			}
 
 			for (int y = 0; y < CHUNK_HEIGHT; ++y) {
-				// Does our neighbor block have a block light > 0 or sky light > 0?
-				// If so, schedule a light update for the block on our side of the border.
-				const Int3 lightUpdatePos = { nx, y, nz };
-				if (neighborChunk->GetBlockLight(lightUpdatePos)) {
+				const Int3 ownPos = { lx, y, lz };
+				const Int3 neighborPos = { nx, y, nz };
+
+				// Only the neighbor being brighter can change our cell. Most
+				// border cells are already equal or brighter, so skipping
+				// them avoids thousands of no-op propagation steps per chunk.
+				if (neighborChunk->GetBlockLight(neighborPos) > chunk->GetBlockLight(ownPos))
 					lightManager.ScheduleLightUpdate({ bpos.x + lx, y, bpos.z + lz }, LightType::Block);
-				}
-				if (neighborChunk->GetSkyLight(lightUpdatePos) > 0) {
+				if (neighborChunk->GetSkyLight(neighborPos) > chunk->GetSkyLight(ownPos))
 					lightManager.ScheduleLightUpdate({ bpos.x + lx, y, bpos.z + lz }, LightType::Sky);
-				}
 			}
 		}
 	}

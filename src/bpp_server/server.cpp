@@ -845,9 +845,7 @@ void Server::Tick() {
 	if (sampling)
 		tickProfiler.Record(TickTask::OffTickTasks, Clock::now() - inventoryStart);
 	gameRuntime.world.Tick(overworldPositions, advanceSimulation, sampling ? &tickProfiler : nullptr);
-	gameRuntime.world.Update(overworldPositions);
 	gameRuntime.worldHell.Tick(netherPositions, advanceSimulation, sampling ? &tickProfiler : nullptr);
-	gameRuntime.worldHell.Update(netherPositions);
 
 	if (advanceSimulation && pendingTickSteps > 0)
 		--pendingTickSteps;
