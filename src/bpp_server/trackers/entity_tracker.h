@@ -51,6 +51,7 @@ struct TrackedEntry {
 	int updateCounter = 0;
 	int ticksSinceTeleport = 0;
 	uint32_t lastEquipmentRevision = UINT32_MAX;
+	Vec3 lastSpawnCheckPosition{};
 	bool isMobile = false;
 	bool isPlayer = false;
 	std::unordered_set<EntityId> visibleTo; // what player ids can see this entity
@@ -71,6 +72,8 @@ struct EntityTracker {
 	size_t equipmentUpdateCalls = 0;
 	size_t metadataUpdateCalls = 0;
 	size_t eventFlushCalls = 0;
+	size_t spawnPairChecks = 0;
+	bool spawnStateDirty = true;
 
 	TickTime forceTeleportTicks = 400; // 20 seconds
 	Java::Random rand;

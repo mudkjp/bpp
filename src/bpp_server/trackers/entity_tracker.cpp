@@ -63,6 +63,17 @@ void EntityTracker::Tick() {
 		playerIds.erase(entityId);
 	}
 
+	// Track whether any tracked entity moved since the previous spawn pass.
+	// If nothing moved, visibility cannot change, so the O(players * entities)
+	// spawn scan can be skipped entirely.
+	bool anyMoved = spawnStateDirty;
+	for (auto& [entityId, entry] : trackedEntities) {
+		if (entry.entity->position != entry.lastSpawnCheckPosition)
+			anyMoved = true;
+		entry.lastSpawnCheckPosition = entry.entity->position;
+	}
+	spawnStateDirty = false;
+
 	// Despawn pass / update
 	for (auto& [entityId, entry] : trackedEntities) {
 		this->Update(entry); // Determine what packets to send
@@ -94,20 +105,23 @@ void EntityTracker::Tick() {
 	}
 
 	// Spawn pass
-	for (EntityId playerId : playerIds) {
-		auto& player = trackedEntities.at(playerId);
+	if (anyMoved) {
+		for (EntityId playerId : playerIds) {
+			auto& player = trackedEntities.at(playerId);
 
-		for (auto& [entityId, entityEntry] : trackedEntities) {
-			if (entityId == playerId)
-				continue;
+			for (auto& [entityId, entityEntry] : trackedEntities) {
+				if (entityId == playerId)
+					continue;
+				++spawnPairChecks;
 
-			if (DistanceBetweenPlayerAndEntity(entityEntry.entity, player.entity) >
-			        entityEntry.profile.range * entityEntry.profile.range ||
-			    entityEntry.visibleTo.find(playerId) != entityEntry.visibleTo.end()) {
-				continue;
+				if (DistanceBetweenPlayerAndEntity(entityEntry.entity, player.entity) >
+				        entityEntry.profile.range * entityEntry.profile.range ||
+				    entityEntry.visibleTo.find(playerId) != entityEntry.visibleTo.end()) {
+					continue;
+				}
+
+				SpawnEntityForPlayer(playerId, entityEntry);
 			}
-
-			SpawnEntityForPlayer(playerId, entityEntry);
 		}
 	}
 }
@@ -118,6 +132,8 @@ void EntityTracker::TrackEntity(Entity* _entity) {
 	entry.profile = GetTrackingProfile(*_entity);
 	entry.isMobile = dynamic_cast<MobileEntity*>(_entity) != nullptr;
 	entry.isPlayer = _entity->type == EntityType::PLAYER;
+	entry.lastSpawnCheckPosition = _entity->position;
+	spawnStateDirty = true;
 
 	entry.lastEncodedPos = QuantizePosition(_entity->position);
 	entry.lastBroadcastMotion = _entity->velocity;
@@ -168,6 +184,8 @@ void EntityTracker::AddPlayer(Entity* _player) {
 	entry.profile = GetTrackingProfile(*_player);
 	entry.isMobile = true;
 	entry.isPlayer = true;
+	entry.lastSpawnCheckPosition = _player->position;
+	spawnStateDirty = true;
 
 	entry.lastEncodedPos = QuantizePosition(_player->position);
 	entry.lastBroadcastMotion = _player->velocity;
