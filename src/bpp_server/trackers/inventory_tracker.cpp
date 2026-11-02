@@ -6,6 +6,7 @@
  *
 */
 #include "inventory_tracker.h"
+#include "window0_sync.h"
 
 #include "inventory/interactions/furnace.h"
 #include "logger.h"
@@ -17,18 +18,11 @@
 
 void InventoryTracker::Tick(Server& _server) {
 	for (auto& session : _server.GetPlayers()) {
-		// Diff window 0 every tick
-		{
-			auto diffs2 = session->inventoryInteraction.TickDiff();
-			if (diffs2.size() <= 5) {
-				for (const auto& difference : diffs2) {
-					PacketUtilities::SendSlot(*session, 0, difference.slot, &difference.stack);
-				}
-			} else {
-				// Too many changes, just resend the whole inventory
-				PacketUtilities::SendInventory(*session, 0, *session->inventoryInteraction.inventory);
-			}
-		}
+		// Diff window 0 only when no container window covers it. The container
+		// diff already handles the shared player slots; anything else (armor,
+		// crafting grid) is caught up on the first tick after it closes.
+		if (InventoryTracker::ShouldDiffWindow0(*session))
+			InventoryTracker::SendWindow0Diff(*session);
 
 		// Held item updates (i.e. maps)
 		{
