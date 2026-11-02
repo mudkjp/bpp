@@ -55,6 +55,9 @@ struct EntityManager {
 
 private:
 	void TickEntityAndPassenger(const std::shared_ptr<Entity>& _entity, TickProfiler* _profiler);
+	// Remove an entity from players/buckets and run its despawn callback,
+	// without touching the master entities vector.
+	void DetachEntity(const std::shared_ptr<Entity>& _entity);
 	constexpr bool IsMonster(const EntityType _type) {
 		switch (_type) {
 		case EntityType::CREEPER:

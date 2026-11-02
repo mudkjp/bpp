@@ -89,7 +89,11 @@ void EntityManager::RemoveEntity(EntityId _id) {
 	}
 
 	std::shared_ptr<Entity> entity = *it;
+	DetachEntity(entity);
+	entities.erase(it);
+}
 
+void EntityManager::DetachEntity(const std::shared_ptr<Entity>& entity) {
 	// Remove player
 	if (entity->type == EntityType::PLAYER)
 		std::erase_if(players, [&](const std::weak_ptr<Entity>& _w) {
@@ -111,9 +115,6 @@ void EntityManager::RemoveEntity(EntityId _id) {
 		    bucket.worldCollidableEntities.end());
 		PruneEmptyContainer(cpos);
 	}
-
-	// Remove from the master list
-	entities.erase(it);
 
 	// Unbind ourselves
 	entity->entityManager = nullptr;
@@ -234,12 +235,18 @@ void EntityManager::Tick(TickProfiler* _profiler) {
 		TickEntityAndPassenger(entity, _profiler);
 	}
 
-	// Remove dead entities after ticking so iteration stays stable
-	for (size_t i = 0; i < entities.size();) {
-		if (entities[i]->isDead)
-			RemoveEntity(entities[i]->id);
-		else
-			++i;
+	// Remove dead entities after ticking. Detach them all first, then erase
+	// them from the master list in one pass; doing RemoveEntity() per death
+	// was O(dead * entities) because of the repeated find/erase.
+	std::vector<std::shared_ptr<Entity>> dead;
+	for (const auto& entity : entities) {
+		if (entity->isDead)
+			dead.push_back(entity);
+	}
+	for (const auto& entity : dead)
+		DetachEntity(entity);
+	if (!dead.empty()) {
+		std::erase_if(entities, [](const std::shared_ptr<Entity>& _entity) { return _entity->isDead; });
 	}
 
 	// Clear players that have expired
