@@ -117,7 +117,7 @@ void EntityTracker::TrackEntity(Entity* _entity) {
 	entry.entity = _entity;
 	entry.profile = GetTrackingProfile(*_entity);
 	entry.isMobile = dynamic_cast<MobileEntity*>(_entity) != nullptr;
-	entry.isPlayer = _entity->type == EntityType::PLAYER;
+	entry.isPlayer = dynamic_cast<EntityMPPlayer*>(_entity) != nullptr;
 
 	entry.lastEncodedPos = QuantizePosition(_entity->position);
 	entry.lastBroadcastMotion = _entity->velocity;
