@@ -1879,6 +1879,31 @@ void TestCommandLiteralIndex() {
 	CHECK(tree.execute("mixed opt8", nullptr, allow).has_value());
 }
 
+void TestLightEditColumn() {
+	WorldManager world;
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 0, 0 };
+	chunk->state.store(ChunkState::Generated);
+	chunk->FillSlices(0, 63, BLOCK_STONE);
+	chunk->GenerateSkylightMap();
+	world.chunks[Int32_2{ 0, 0 }] = chunk;
+
+	// No-op light writes must not dirty the chunk.
+	chunk->isModified = false;
+	chunk->SetSkyLight({ 8, 100, 8 }, 15);
+	CHECK(!chunk->isModified);
+	chunk->SetSkyLight({ 8, 100, 8 }, 7);
+	CHECK(chunk->isModified);
+
+	// Raising the surface covers the open-sky cell.
+	world.SetBlock({ 8, 64, 8 }, BLOCK_STONE);
+	CHECK(int(chunk->GetSkyLight({ 8, 64, 8 })) < 15);
+
+	// Lowering it restores full skylight in the newly exposed cell.
+	world.SetBlock({ 8, 64, 8 }, BLOCK_AIR);
+	CHECK_EQ(int(chunk->GetSkyLight({ 8, 64, 8 })), 15);
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -2094,6 +2119,7 @@ std::vector<TestCase> Tests() {
 		{ "random_tick_cache", TestRandomTickCache },
 		{ "loaded_chunk_climate", TestLoadedChunkClimateBaked },
 		{ "send_chat_fast_path", TestSendChatFastPath },
+		{ "light_edit_column", TestLightEditColumn },
 		{ "command_literal_index", TestCommandLiteralIndex },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "collision_shape_storage", TestCollisionShapeStorage },
@@ -2246,6 +2272,24 @@ void RunBenchmarks() {
 	Bench("chunk_skylight_map", CHUNK_VOLUME, [&] {
 		skylit.GenerateSkylightMap();
 		return size_t(skylit.GetSkyLight({ 8, 64, 8 }));
+	});
+
+	WorldManager lightEditWorld;
+	auto lightEditChunk = std::make_shared<Chunk>();
+	lightEditChunk->cpos = { 0, 0 };
+	lightEditChunk->state.store(ChunkState::Generated);
+	lightEditChunk->FillSlices(0, 63, BLOCK_STONE);
+	lightEditChunk->GenerateSkylightMap();
+	lightEditWorld.chunks[Int32_2{ 0, 0 }] = lightEditChunk;
+	int lightEditToggle = 0;
+	Bench("light_edit_surface", 0, [&] {
+		lightEditWorld.SetBlock({ 8, 64, 8 },
+		                        (lightEditToggle++ & 1) ? BLOCK_STONE : BLOCK_AIR);
+		return size_t(lightEditChunk->GetSkyLight({ 8, 64, 8 }));
+	});
+	Bench("light_setter_noop", 0, [&] {
+		lightEditChunk->SetSkyLight({ 8, 100, 8 }, 15);
+		return size_t(1);
 	});
 
 	WorldManager unlightWorld;
