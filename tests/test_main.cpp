@@ -16,6 +16,7 @@
 
 #include "blocks/block_properties_behaviors.h"
 #include "chunk.h"
+#include "chunk_broadcaster.h"
 #include "chunk_sender.h"
 #include "chunk_serializer.h"
 #include "config/config.h"
@@ -996,6 +997,24 @@ void TestTrackerSpawnPassCaching() {
 	CHECK_EQ(tracker.spawnPairChecks, size_t(1));
 }
 
+void TestBlockChangeDedup() {
+	std::vector<PendingBlock> single{ PendingBlock{ .block = { BLOCK_STONE, 1 }, .blockPos = { 1, 2, 3 } } };
+	ChunkBroadcaster::DeduplicateBlockChanges(single);
+	CHECK_EQ(single.size(), size_t(1));
+	CHECK_EQ(single[0].block.data, uint8_t(1));
+
+	std::vector<PendingBlock> changes{
+		PendingBlock{ .block = { BLOCK_STONE, 1 }, .blockPos = { 1, 2, 3 } },
+		PendingBlock{ .block = { BLOCK_DIRT, 2 }, .blockPos = { 1, 2, 3 } },
+		PendingBlock{ .block = { BLOCK_GRASS, 3 }, .blockPos = { 4, 5, 6 } },
+	};
+	ChunkBroadcaster::DeduplicateBlockChanges(changes);
+	CHECK_EQ(changes.size(), size_t(2));
+	CHECK_EQ(int(changes[0].block.type), int(BLOCK_DIRT));
+	CHECK_EQ(changes[0].block.data, uint8_t(2));
+	CHECK_EQ(int(changes[1].block.type), int(BLOCK_GRASS));
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1136,6 +1155,7 @@ std::vector<TestCase> Tests() {
 		{ "tracker_spawn_pass_cache", TestTrackerSpawnPassCaching },
 		{ "block_lookup_tables", TestBlockLookupTables },
 		{ "subregion_dedup", TestSubRegionDedup },
+		{ "block_change_dedup", TestBlockChangeDedup },
 		{ "chunk_sender_stationary_scan", TestChunkSenderStationaryScan },
 		{ "pathfinder_flat", TestPathfinderFlat },
 		{ "region_fixture", TestRegionFixture },
@@ -1466,6 +1486,30 @@ void RunBenchmarks() {
 	const size_t movingLookups = scanSender.radiusLookups - lookupBefore;
 	std::cout << std::format("BENCH chunk_sender_radius_lookups  cached={} moving={}\n", cachedLookups,
 	                         movingLookups);
+
+	std::vector<PendingBlock> broadcastSingle{
+		PendingBlock{ .block = { BLOCK_STONE, 1 }, .blockPos = { 1, 64, 3 } }
+	};
+	Bench("block_broadcast_single_dedupe", 0, [&] {
+		ChunkBroadcaster::DeduplicateBlockChanges(broadcastSingle);
+		return broadcastSingle.size();
+	});
+	std::vector<PendingBlock> broadcastSmall;
+	for (int i = 0; i < 8; ++i)
+		broadcastSmall.push_back(PendingBlock{ .block = { BLOCK_STONE, uint8_t(i) }, .blockPos = { i, 64, 3 } });
+	Bench("block_broadcast_small_dedupe", 0, [&] {
+		ChunkBroadcaster::DeduplicateBlockChanges(broadcastSmall);
+		return broadcastSmall.size();
+	});
+	NetworkStream broadcastScratch(-1);
+	Packet::SetBlock broadcastPacket;
+	broadcastPacket.block = { BLOCK_STONE, 1 };
+	broadcastPacket.position = { 1, 64, 3 };
+	Bench("block_broadcast_single_serialize", 0, [&] {
+		broadcastScratch.ClearWriteBuffer();
+		broadcastPacket.Serialize(broadcastScratch);
+		return broadcastScratch.GetRawWriteBuffer().size();
+	});
 
 	TempDir temp("region-bench");
 	std::filesystem::copy_file(Fixture("region/r.0.0.mcr"), temp.path / "r.0.0.mcr");
