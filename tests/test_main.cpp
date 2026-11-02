@@ -1162,6 +1162,42 @@ void TestTrackerMassDespawn() {
 	CHECK_EQ(staleTracker.staleVisibilityErases, size_t(1));
 }
 
+void TestRainWetnessCache() {
+	WorldManager world;
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 0, 0 };
+	chunk->state.store(ChunkState::Generated);
+	chunk->FillSlices(0, 63, BLOCK_STONE);
+	chunk->GenerateHeightMap();
+	chunk->climateBaked = true;
+	for (int i = 0; i < CHUNK_AREA; ++i)
+		chunk->biomes.Set(size_t(i), uint8_t(BIOME_RAINFOREST));
+	world.chunks[Int32_2{ 0, 0 }] = chunk;
+	world.weatherSystem.SetRaining(1000);
+
+	Entity entity;
+	entity.world = &world;
+	entity.position = { 8.5, 64.0, 8.5 };
+	entity.RebuildCollider();
+
+	entity.UpdateEntityPhysicsState();
+	CHECK(entity.IsWet());
+
+	// A roof blocks the rain; removing it opens the column again.
+	world.SetBlock({ 8, 70, 8 }, BLOCK_STONE);
+	entity.UpdateEntityPhysicsState();
+	CHECK(!entity.IsWet());
+
+	world.SetBlock({ 8, 70, 8 }, BLOCK_AIR);
+	entity.UpdateEntityPhysicsState();
+	CHECK(entity.IsWet());
+
+	// Clear weather dries immediately on the next update.
+	world.weatherSystem.Init(0, 0, false, false);
+	entity.UpdateEntityPhysicsState();
+	CHECK(!entity.IsWet());
+}
+
 void TestMobileLavaState() {
 	WorldManager world;
 	auto chunk = std::make_shared<Chunk>();
@@ -2837,6 +2873,7 @@ std::vector<TestCase> Tests() {
 		{ "recipe_empty_grid", TestRecipeEmptyGrid },
 		{ "find_top_solid_block", TestFindTopSolidBlock },
 		{ "mobile_lava_state", TestMobileLavaState },
+		{ "rain_wetness_cache", TestRainWetnessCache },
 		{ "container_mirror_sync", TestContainerMirrorSync },
 		{ "player_save_queue", TestPlayerSaveQueue },
 		{ "command_parsing", TestCommandParsing },
@@ -3692,6 +3729,38 @@ void RunBenchmarks() {
 	});
 	std::cout << std::format("BENCH tracker_mass_despawn_operations  removed=1000 full_map_scans=0 stale_visibility_erases={}\n",
 	                         massTracker.staleVisibilityErases);
+
+	WorldManager wetWorld;
+	for (int cx = -1; cx <= 1; ++cx) {
+		for (int cz = -1; cz <= 1; ++cz) {
+			auto chunk = std::make_shared<Chunk>();
+			chunk->cpos = { cx, cz };
+			chunk->state.store(ChunkState::Generated);
+			chunk->FillSlices(0, 63, BLOCK_STONE);
+			chunk->GenerateHeightMap();
+			chunk->climateBaked = true;
+			for (int i = 0; i < CHUNK_AREA; ++i)
+				chunk->biomes.Set(size_t(i), uint8_t(BIOME_RAINFOREST));
+			wetWorld.chunks[Int32_2{ cx, cz }] = std::move(chunk);
+		}
+	}
+	wetWorld.weatherSystem.SetRaining(1000);
+	std::vector<std::shared_ptr<Entity>> wetEntities;
+	for (int i = 0; i < 200; ++i) {
+		auto entity = std::make_shared<Entity>();
+		entity->world = &wetWorld;
+		entity->position = { 2.5 + double(i % 12), 64.0, 2.5 + double((i / 12) % 60) };
+		entity->RebuildCollider();
+		wetEntities.push_back(std::move(entity));
+	}
+	Bench("entity_rain_wetness_200", 0, [&] {
+		size_t wet = 0;
+		for (auto& entity : wetEntities) {
+			entity->UpdateEntityPhysicsState();
+			wet += entity->IsWet() ? 1 : 0;
+		}
+		return wet;
+	});
 
 	WorldManager mobWorld;
 	for (int cx = -1; cx <= 1; ++cx) {
