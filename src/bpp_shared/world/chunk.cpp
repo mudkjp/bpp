@@ -356,4 +356,5 @@ void Chunk::Compact() {
 void Chunk::CopyStorageFrom(const Chunk& _other) {
 	for (size_t i = 0; i < subChunks.size(); i++)
 		subChunks[i].CopyFrom(_other.subChunks[i]);
+	biomes = _other.biomes;
 }
