@@ -1351,6 +1351,45 @@ void TestChunkSenderFlushOrdering() {
 	CHECK((session.newlyFlushed[0] == Int32_2{ 2, 0 }));
 }
 
+void TestLoadingChunkIndex() {
+	TempDir temp("loading-index");
+	const auto regionDir = temp.path / "region";
+	std::filesystem::create_directories(regionDir);
+	RegionManager regions;
+	CHECK(regions.Initialize(regionDir.string()));
+
+	{
+		auto saved = std::make_shared<Chunk>();
+		BuildSyntheticChunk(*saved);
+		regions.SaveChunk(saved, false);
+		regions.FlushAll();
+	}
+
+	WorldManager world;
+	world.regionManager = &regions;
+	auto placeholder = std::make_shared<Chunk>();
+	placeholder->cpos = { 0, 0 };
+	world.chunks[Int32_2{ 0, 0 }] = placeholder;
+	world.TrackUnloadedChunk({ 0, 0 });
+	CHECK_EQ(world.PendingLoadingCount(), size_t(0));
+
+	world.PumpPipeline({});
+	CHECK_EQ(world.PendingLoadingCount(), size_t(1));
+
+	regions.iopool.wait();
+	world.DrainLoadQueue();
+	CHECK_EQ(world.PendingLoadingCount(), size_t(0));
+
+	auto it = world.chunks.find(Int32_2{ 0, 0 });
+	CHECK(it != world.chunks.end());
+	if (it != world.chunks.end()) {
+		CHECK(it->second->state.load() >= ChunkState::Generated);
+		CHECK_EQ(it->second->cpos.x, 0);
+		CHECK_EQ(it->second->cpos.z, 0);
+	}
+	regions.Release();
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1559,6 +1598,7 @@ std::vector<TestCase> Tests() {
 		{ "chunk_interest_cache", TestChunkInterestCache },
 		{ "unloaded_chunk_index", TestUnloadedChunkIndex },
 		{ "pump_pipeline_index", TestPumpPipelineIndex },
+		{ "loading_chunk_index", TestLoadingChunkIndex },
 		{ "populate_frontier", TestPopulateFrontier },
 		{ "chunk_light_emitters", TestChunkLightEmitters },
 		{ "collision_fast_path", TestCollisionFastPath },
@@ -2027,6 +2067,25 @@ void RunBenchmarks() {
 		pipelineWorld.PumpPipeline({});
 		return pipelineWorld.chunks.size();
 	});
+
+	TempDir drainTemp("drain-bench");
+	const auto drainRegionDir = drainTemp.path / "region";
+	std::filesystem::create_directories(drainRegionDir);
+	RegionManager drainRegions;
+	drainRegions.Initialize(drainRegionDir.string());
+	WorldManager drainWorld;
+	drainWorld.regionManager = &drainRegions;
+	for (int i = 0; i < 10000; ++i) {
+		auto chunk = std::make_shared<Chunk>();
+		chunk->cpos = { i % 100, i / 100 };
+		chunk->state.store(ChunkState::Generated);
+		drainWorld.chunks.emplace(chunk->cpos, std::move(chunk));
+	}
+	Bench("drain_load_queue_idle_10k", 0, [&] {
+		drainWorld.DrainLoadQueue();
+		return drainWorld.chunks.size();
+	});
+	drainRegions.Release();
 
 	WorldManager populateWorld;
 	for (int i = 0; i < 10000; ++i) {
