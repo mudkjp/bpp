@@ -36,7 +36,7 @@ void FurnaceInventoryInteraction::InitSnapshot() {
 	snapshot = sharedInventory.slots;
 }
 
-std::vector<DeltaSlot> FurnaceInventoryInteraction::TickDiff() {
+std::span<const DeltaSlot> FurnaceInventoryInteraction::TickDiff() {
 	MergeInventories();
 	return InventoryInteraction::TickDiff();
 }

@@ -33,7 +33,7 @@ void TrapInventoryInteraction::InitSnapshot() {
 	snapshot = sharedInventory.slots;
 }
 
-std::vector<DeltaSlot> TrapInventoryInteraction::TickDiff() {
+std::span<const DeltaSlot> TrapInventoryInteraction::TickDiff() {
 	MergeInventories();
 	return InventoryInteraction::TickDiff();
 }

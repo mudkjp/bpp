@@ -32,7 +32,7 @@ void ChestInventoryInteraction::InitSnapshot() {
 	snapshot = sharedInventory.slots;
 }
 
-std::vector<DeltaSlot> ChestInventoryInteraction::TickDiff() {
+std::span<const DeltaSlot> ChestInventoryInteraction::TickDiff() {
 	MergeInventories();
 	return InventoryInteraction::TickDiff();
 }

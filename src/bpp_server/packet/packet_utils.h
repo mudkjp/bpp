@@ -32,7 +32,7 @@ inline void SendInventory(PlayerSession& _session, WindowId _windowId, Inventory
 }
 
 // Sends a single slot update. windowId=-1 / slotId=-1 updates the cursor.
-inline void SendSlot(PlayerSession& _session, WindowId _windowId, NetworkSlotId _slotId, ItemStack* _stack) {
+inline void SendSlot(PlayerSession& _session, WindowId _windowId, NetworkSlotId _slotId, const ItemStack* _stack) {
 	Packet::SetSlot pkt;
 	pkt.windowId = _windowId;
 	pkt.slotId = _slotId;

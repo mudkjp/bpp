@@ -21,7 +21,7 @@ void InventoryTracker::Tick(Server& _server) {
 		{
 			auto diffs2 = session->inventoryInteraction.TickDiff();
 			if (diffs2.size() <= 5) {
-				for (auto difference : diffs2) {
+				for (const auto& difference : diffs2) {
 					PacketUtilities::SendSlot(*session, 0, difference.slot, &difference.stack);
 				}
 			} else {
@@ -53,7 +53,7 @@ void InventoryTracker::Tick(Server& _server) {
 		// Send each differing slot
 		auto diffs = session->activeInteraction->TickDiff();
 		if (diffs.size() <= 5) {
-			for (auto difference : diffs) {
+			for (const auto& difference : diffs) {
 				PacketUtilities::SendSlot(*session, session->openWindowId, difference.slot, &difference.stack);
 			}
 		} else {

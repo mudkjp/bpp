@@ -8,6 +8,7 @@
 #include "entities/entity_player.h"
 #include "inventory.h"
 #include "inventory/item_stack.h"
+#include <span>
 
 struct DeltaSlot {
 	ItemStack stack;
@@ -33,8 +34,10 @@ struct InventoryInteraction {
 	virtual void InitSnapshot();
 
 	// Analyze the snapshot vs the current inventory
-	// Returns a list of slots that are different
-	virtual std::vector<DeltaSlot> TickDiff();
+	// Returns a view of the slots that are different. The buffer is reused
+	// between ticks so an unchanged inventory performs no allocation.
+	std::vector<DeltaSlot> diffScratch;
+	virtual std::span<const DeltaSlot> TickDiff();
 
 	virtual void OnLeftClick(int _slot);
 

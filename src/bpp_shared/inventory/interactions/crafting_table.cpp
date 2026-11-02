@@ -55,17 +55,19 @@ void CraftingTableInventoryInteraction::InitSnapshot() {
 		snapshot[i] = sharedInventory.slots[i];
 }
 
-std::vector<DeltaSlot> CraftingTableInventoryInteraction::TickDiff() {
-	std::vector<DeltaSlot> differences;
+std::span<const DeltaSlot> CraftingTableInventoryInteraction::TickDiff() {
+	diffScratch.clear();
 	MergeInventories(); // make sure sharedInventory is current before diffing
-	for (size_t i = 0; i < snapshot.size(); i++) {
-		auto& snap = snapshot[i];
-		if (snap == sharedInventory.slots[i])
+	const size_t count = snapshot.size();
+	ItemStack* snapshots = snapshot.data();
+	const ItemStack* slots = sharedInventory.slots.data();
+	for (size_t i = 0; i < count; i++) {
+		if (snapshots[i] == slots[i])
 			continue;
-		snap = sharedInventory.slots[i];
-		differences.push_back({ snap, int(i) });
+		snapshots[i] = slots[i];
+		diffScratch.push_back({ snapshots[i], int(i) });
 	}
-	return differences;
+	return diffScratch;
 }
 
 void CraftingTableInventoryInteraction::MergeInventories() {

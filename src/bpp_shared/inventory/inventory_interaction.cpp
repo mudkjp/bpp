@@ -15,23 +15,22 @@ void InventoryInteraction::InitSnapshot() {
 	snapshot = inventory->slots;
 }
 
-std::vector<DeltaSlot> InventoryInteraction::TickDiff() {
-	if (snapshot.empty())
-		return {};
-
-	std::vector<DeltaSlot> differences;
-	differences.reserve(snapshot.size());
-	for (size_t i = 0; i < snapshot.size(); i++) {
-		auto& snap = snapshot[i];
-
-		bool changed = snap != inventory->slots[i];
-		if (!changed)
+std::span<const DeltaSlot> InventoryInteraction::TickDiff() {
+	diffScratch.clear();
+	const size_t count = snapshot.size();
+	// Keep raw pointers in locals: writes through diffScratch's buffer would
+	// otherwise force the compiler to reload the vector's data pointer on every
+	// push_back, because the two vectors could alias.
+	ItemStack* snapshots = snapshot.data();
+	const ItemStack* slots = inventory->slots.data();
+	for (size_t i = 0; i < count; i++) {
+		if (snapshots[i] == slots[i])
 			continue;
 
-		snap = inventory->slots[i];
-		differences.push_back({ snap, int(i) });
+		snapshots[i] = slots[i];
+		diffScratch.push_back({ snapshots[i], int(i) });
 	}
-	return differences;
+	return diffScratch;
 }
 
 void InventoryInteraction::OnLeftClick(int _slot) {

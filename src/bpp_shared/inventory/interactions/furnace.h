@@ -27,7 +27,7 @@ struct FurnaceInventoryInteraction : InventoryInteraction {
 
 	virtual bool CanExist(PlayerEntity& player) override;
 	void InitSnapshot() override;
-	std::vector<DeltaSlot> TickDiff() override;
+	std::span<const DeltaSlot> TickDiff() override;
 	void MergeInventories();
 	void WriteBack();
 	void OnLeftClick(int _slot) override;

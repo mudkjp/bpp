@@ -30,7 +30,7 @@ struct CraftingTableInventoryInteraction : CraftingInventoryInteraction {
 
 	bool CanExist(PlayerEntity& player) override;
 	void InitSnapshot() override;
-	std::vector<DeltaSlot> TickDiff() override;
+	std::span<const DeltaSlot> TickDiff() override;
 	void WriteBack();
 	void OnInteractionClosed(PlayerEntity& player) override;
 

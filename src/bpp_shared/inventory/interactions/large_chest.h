@@ -29,7 +29,7 @@ struct LargeChestInventoryInteraction : InventoryInteraction {
 
 	bool CanExist(PlayerEntity& player) override;
 	void InitSnapshot() override;
-	std::vector<DeltaSlot> TickDiff() override;
+	std::span<const DeltaSlot> TickDiff() override;
 	void MergeInventories();
 	void WriteBack();
 	void OnShiftClick(int _slot) override;
