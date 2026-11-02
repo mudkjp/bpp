@@ -13,6 +13,8 @@
 #include <vector>
 #include "blocks/materials.h"
 
+class WorldManager;
+
 namespace Map {
 enum class Icon : uint8_t {
 	WhiteArrow,
@@ -33,6 +35,12 @@ void InitGraphics(std::vector<uint8_t>& _mapData, const Byte2 _offset);
 void PlaceMarkers(std::vector<uint8_t>& _mapData, const std::vector<MarkerPlacement> _markers);
 
 void InitMaps();
+// Builds one 128-pixel map column payload (GRAPHICS header + pixels) for the
+// given world x. Caches the at most nine chunks the column crosses instead of
+// doing a chunk lookup for every height and block probe.
+void BuildColumnData(std::vector<uint8_t>& _mapData, WorldManager& _world, int _x);
+// Builds the ICON payload for one marker, reusing the vector's capacity.
+void BuildMarkerData(std::vector<uint8_t>& _mapData, const MarkerPlacement& _marker);
 struct Item {
 	static constexpr uint8_t MAP_ITEM_WIDTH = 128;
 	static constexpr uint16_t MAP_ITEM_AREA = MAP_ITEM_WIDTH * MAP_ITEM_WIDTH;

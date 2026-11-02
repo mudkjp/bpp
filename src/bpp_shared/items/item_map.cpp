@@ -6,6 +6,8 @@
 */
 
 #include "item_map.h"
+#include "blocks.h"
+#include "world.h"
 #include "../enums/network/packet_data.h"
 #include "../logger/logger.h"
 #include <cmath>
@@ -54,6 +56,55 @@ void CreateMap(const Int32_2 _origin) {
 	auto newMap = Item();
 	newMap.Init(_origin);
 	//maps[globalId] = std::move(newMap);
+}
+
+void BuildMarkerData(std::vector<uint8_t>& _mapData, const MarkerPlacement& _marker) {
+	_mapData.clear();
+	_mapData.reserve(4);
+	_mapData.push_back(PacketData::MapDataType::ICON);
+	_mapData.push_back(
+	    static_cast<uint8_t>((_marker.rotation << 4) | static_cast<uint8_t>(_marker.icon)));
+	_mapData.push_back(_marker.position.x);
+	_mapData.push_back(_marker.position.z);
+}
+
+void BuildColumnData(std::vector<uint8_t>& _mapData, WorldManager& _world, int _x) {
+	// The column covers z = -1 (for the north slope) through 127, so at most
+	// nine chunks: z chunks -1..7.
+	constexpr int MIN_CHUNK_Z = -1;
+	constexpr int MAX_CHUNK_Z = 7;
+	Chunk* zChunks[MAX_CHUNK_Z - MIN_CHUNK_Z + 1] = {};
+	const int chunkX = _x >> 4;
+	for (int cz = MIN_CHUNK_Z; cz <= MAX_CHUNK_Z; ++cz) {
+		Chunk* chunk = _world.GetChunkRaw({ chunkX, cz });
+		if (chunk && chunk->state.load(std::memory_order_acquire) >= ChunkState::Generated)
+			zChunks[cz - MIN_CHUNK_Z] = chunk;
+	}
+
+	auto chunkAt = [&](int _z) -> Chunk* { return zChunks[(_z >> 4) - MIN_CHUNK_Z]; };
+	auto heightAt = [&](int _z) -> int {
+		Chunk* chunk = chunkAt(_z);
+		return chunk ? int(chunk->GetHeightValue({ _x & 15, _z & 15 })) : 0;
+	};
+	auto blockAt = [&](int _y, int _z) -> BlockType {
+		if (_y < 0 || _y >= CHUNK_HEIGHT)
+			return BLOCK_AIR;
+		Chunk* chunk = chunkAt(_z);
+		return chunk ? chunk->GetBlock({ _x & 15, _y, _z & 15 }) : BLOCK_AIR;
+	};
+
+	InitGraphics(_mapData, Byte2{ static_cast<int8_t>(_x), 0 });
+	for (int z = 0; z < Item::MAP_ITEM_WIDTH; ++z) {
+		const int northY = heightAt(z - 1);
+		const int y = heightAt(z);
+		const BlockType block = blockAt(y - 1, z);
+		int8_t brightness = 1;
+		if (northY > y)
+			brightness--;
+		if (northY < y)
+			brightness++;
+		AppendPixel(_mapData, uint8_t((Blocks::blockProperties[block].material.mapColor.index << 2) | brightness));
+	}
 }
 
 void Item::Init(const Int32_2 _origin) {

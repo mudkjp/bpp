@@ -388,49 +388,33 @@ void RegisterAll() {
 	};
 
 	itemBehavior[MAP].whileHeld = [](ItemStack* /*_stack*/, PlayerSession& _session, Server& _server) {
-		auto pos = _session.position.GetBlockPos();
-		std::vector<Map::MarkerPlacement> markers = {
-			// TODO: Evil fuck-ass offset magic???
-			Map::MakeMarker(Map::Icon::WhiteArrow, _session.rotation.x,
-			                Byte2{ static_cast<int8_t>(pos.x), static_cast<int8_t>(pos.z) })
-		};
-		std::vector<uint8_t> mapIcons;
-		PlaceMarkers(mapIcons, markers);
-		Packet::ItemData pkt;
-		pkt.itemId = MAP;
-		pkt.mapId = 0;
-		pkt.data = mapIcons;
-		pkt.Serialize(_session.stream);
+		// Reuse both packets and their payload buffers across ticks. The old
+		// path allocated a marker vector, an icon vector, a graphics vector and
+		// two packets on every tick a player held a map.
+		static thread_local Packet::ItemData iconPacket;
+		static thread_local Packet::ItemData graphicsPacket;
+		static int8_t nextColumn = 0;
 
-		static int8_t x = 0;
-		if (x >= INT8_MAX - 1)
+		auto pos = _session.position.GetBlockPos();
+		const auto marker = Map::MakeMarker(Map::Icon::WhiteArrow, _session.rotation.x,
+		                                    Byte2{ static_cast<int8_t>(pos.x), static_cast<int8_t>(pos.z) });
+
+		iconPacket.itemId = MAP;
+		iconPacket.mapId = 0;
+		Map::BuildMarkerData(iconPacket.data, marker);
+		iconPacket.Serialize(_session.stream);
+
+		if (nextColumn >= INT8_MAX - 1)
 			return;
 
 		// TODO: Maps are 1:8 in B1.7.3
 		// TODO: Maps were centered on the point they were crafted in B1.7.3
 		auto world = _server.GetWorldForDimension(_session.dimension);
-		std::vector<uint8_t> mapData;
-		Map::InitGraphics(mapData, Byte2{ x, 0 });
-
-		for (int z = 0; z < INT8_MAX; z++) {
-			int8_t northY = world->GetHeightValue(x, z - 1);
-			int8_t y = world->GetHeightValue(x, z);
-			Int3 bpos{ x, y - 1, z };
-			BlockType block = world->GetBlockId(bpos);
-			int8_t brightness = 1;
-			if (northY > y)
-				brightness--;
-			if (northY < y)
-				brightness++;
-			Map::AppendPixel(mapData, (Blocks::blockProperties[block].material.mapColor.index << 2) | brightness);
-		}
-
-		Packet::ItemData gfxPkt;
-		gfxPkt.itemId = MAP;
-		gfxPkt.mapId = 0;
-		gfxPkt.data = mapData;
-		gfxPkt.Serialize(_session.stream);
-		x++;
+		graphicsPacket.itemId = MAP;
+		graphicsPacket.mapId = 0;
+		Map::BuildColumnData(graphicsPacket.data, *world, nextColumn);
+		graphicsPacket.Serialize(_session.stream);
+		nextColumn++;
 	};
 
 	itemBehavior[MAP].onStopHolding = [](ItemStack* /*_stack*/) {
