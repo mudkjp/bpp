@@ -867,6 +867,68 @@ void TestPathfinderFlat() {
 		CHECK((path.back() == Int3{ 13, 4, 13 }));
 }
 
+void TestPathfinderReuseAndMaze() {
+	WorldManager world;
+	for (int cx = 0; cx < 2; ++cx) {
+		for (int cz = 0; cz < 2; ++cz) {
+			auto chunk = std::make_shared<Chunk>();
+			chunk->cpos = { cx, cz };
+			chunk->state.store(ChunkState::Generated);
+			chunk->FillSlices(0, 3, BLOCK_STONE);
+			world.chunks[Int32_2{ cx, cz }] = std::move(chunk);
+		}
+	}
+	auto setBlock = [&](int x, int y, int z, BlockType type) {
+		world.chunks[Int32_2{ x >> 4, z >> 4 }]->SetBlockRaw({ x & 15, y, z & 15 }, type);
+	};
+	for (int x = 0; x < 32; ++x) {
+		if (x == 20)
+			continue;
+		setBlock(x, 4, 8, BLOCK_STONE);
+		setBlock(x, 5, 8, BLOCK_STONE);
+	}
+
+	Pathfinder pathfinder(&world);
+	const Int3 start{ 2, 4, 2 };
+	const Int3 goal{ 29, 4, 20 };
+	auto expected = pathfinder.FindPath(start, goal, 0.6f, 1.8f, 40.0f);
+	CHECK(!expected.empty());
+	if (!expected.empty())
+		CHECK((expected.back() == goal));
+	for (size_t i = 1; i < expected.size(); ++i) {
+		const Int3 delta = expected[i] - expected[i - 1];
+		CHECK(std::abs(delta.x) + std::abs(delta.z) <= 1);
+		CHECK(std::abs(delta.y) <= 1);
+	}
+
+	// Reusing the output buffer produces the same path and retains capacity.
+	std::vector<Int3> reused;
+	reused.reserve(1024);
+	pathfinder.FindPathInto(start, goal, reused, 0.6f, 1.8f, 40.0f);
+	CHECK(reused == expected);
+	const size_t capacity = reused.capacity();
+	for (int i = 0; i < 8; ++i)
+		pathfinder.FindPathInto(start, goal, reused, 0.6f, 1.8f, 40.0f);
+	CHECK(reused == expected);
+	CHECK_EQ(reused.capacity(), capacity);
+
+	// A fully walled goal must report no path and clear the output buffer.
+	for (int x = 10; x <= 16; ++x) {
+		for (int z = 10; z <= 16; ++z) {
+			if (x != 10 && x != 16 && z != 10 && z != 16)
+				continue;
+			setBlock(x, 4, z, BLOCK_STONE);
+			setBlock(x, 5, z, BLOCK_STONE);
+		}
+	}
+	const Int3 walledGoal{ 13, 4, 13 };
+	auto unreachable = pathfinder.FindPath(start, walledGoal, 0.6f, 1.8f, 20.0f);
+	CHECK(!unreachable.empty());
+	CHECK((unreachable.back() != walledGoal));
+	pathfinder.FindPathInto(start, walledGoal, reused, 0.6f, 1.8f, 20.0f);
+	CHECK(reused == unreachable);
+}
+
 void TestUnloadedChunkIndex() {
 	WorldManager world;
 	std::vector<ClientPosition> players(1);
@@ -2858,6 +2920,7 @@ std::vector<TestCase> Tests() {
 		{ "redstone_long_wire", TestRedstoneLongWire },
 		{ "redstone_reentrant_update", TestRedstoneReentrantUpdate },
 		{ "pathfinder_flat", TestPathfinderFlat },
+		{ "pathfinder_reuse_maze", TestPathfinderReuseAndMaze },
 		{ "region_fixture", TestRegionFixture },
 		{ "region_generated_round_trip", TestRegionGeneratedRoundTrip },
 		{ "region_overwrite_reuses_sectors", TestRegionOverwriteReusesSectors },
@@ -3281,6 +3344,58 @@ void RunBenchmarks() {
 	Pathfinder pathfinder(&pathWorld);
 	Bench("pathfinder_flat", 0, [&] {
 		auto path = pathfinder.FindPath({ 2, 4, 2 }, { 13, 4, 13 }, 0.6f, 1.8f, 20.0f);
+		return path.size();
+	});
+
+	WorldManager mazeWorld;
+	for (int cx = 0; cx < 2; ++cx) {
+		for (int cz = 0; cz < 2; ++cz) {
+			auto chunk = std::make_shared<Chunk>();
+			chunk->cpos = { cx, cz };
+			chunk->state.store(ChunkState::Generated);
+			chunk->FillSlices(0, 3, BLOCK_STONE);
+			mazeWorld.chunks[Int32_2{ cx, cz }] = std::move(chunk);
+		}
+	}
+	auto mazeSet = [&](int x, int y, int z, BlockType type) {
+		mazeWorld.chunks[Int32_2{ x >> 4, z >> 4 }]->SetBlockRaw({ x & 15, y, z & 15 }, type);
+	};
+	// A wall across the middle with one gap, forcing a detour.
+	for (int x = 0; x < 32; ++x) {
+		if (x == 20)
+			continue;
+		mazeSet(x, 4, 8, BLOCK_STONE);
+		mazeSet(x, 5, 8, BLOCK_STONE);
+	}
+	Bench("pathfinder_maze", 0, [&] {
+		auto path = pathfinder.FindPath({ 2, 4, 2 }, { 29, 4, 20 }, 0.6f, 1.8f, 40.0f);
+		return path.size();
+	});
+
+	WorldManager unreachableWorld;
+	for (int cx = 0; cx < 2; ++cx) {
+		for (int cz = 0; cz < 2; ++cz) {
+			auto chunk = std::make_shared<Chunk>();
+			chunk->cpos = { cx, cz };
+			chunk->state.store(ChunkState::Generated);
+			chunk->FillSlices(0, 3, BLOCK_STONE);
+			unreachableWorld.chunks[Int32_2{ cx, cz }] = std::move(chunk);
+		}
+	}
+	auto unreachableSet = [&](int x, int y, int z, BlockType type) {
+		unreachableWorld.chunks[Int32_2{ x >> 4, z >> 4 }]->SetBlockRaw({ x & 15, y, z & 15 }, type);
+	};
+	for (int x = 10; x <= 16; ++x) {
+		for (int z = 10; z <= 16; ++z) {
+			if (x != 10 && x != 16 && z != 10 && z != 16)
+				continue;
+			unreachableSet(x, 4, z, BLOCK_STONE);
+			unreachableSet(x, 5, z, BLOCK_STONE);
+		}
+	}
+	Pathfinder unreachableFinder(&unreachableWorld);
+	Bench("pathfinder_unreachable", 0, [&] {
+		auto path = unreachableFinder.FindPath({ 2, 4, 2 }, { 13, 4, 13 }, 0.6f, 1.8f, 20.0f);
 		return path.size();
 	});
 
