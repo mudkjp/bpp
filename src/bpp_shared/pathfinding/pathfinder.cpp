@@ -15,15 +15,18 @@
 #include "numeric_structs.h"
 #include "pathfinder.h"
 
-Node* Pathfinder::OpenNode(Int3 _pos) {
-	auto [it, inserted] = nodes.try_emplace(_pos);
+uint32_t Pathfinder::OpenNode(Int3 _pos) {
+	auto [it, inserted] = nodeIndex.try_emplace(_pos);
 
-	if (inserted) {
-		it->second.pos = _pos;
-		it->second.h = _pos.Distance(searchGoal);
+	if (inserted || it->second.generation != nodeGeneration) {
+		it->second.index = uint32_t(nodes.size());
+		it->second.generation = nodeGeneration;
+		nodes.emplace_back();
+		nodes.back().pos = _pos;
+		nodes.back().h = _pos.Distance(searchGoal);
 	}
 
-	return &it->second;
+	return it->second.index;
 }
 
 void Pathfinder::Reset() {
@@ -31,6 +34,11 @@ void Pathfinder::Reset() {
 		open.pop();
 
 	nodes.clear();
+	++nodeGeneration;
+	if (nodeGeneration == 0 || nodeIndex.size() > MAX_RETAINED_NODES) {
+		nodeIndex.clear();
+		nodeGeneration = 1;
+	}
 }
 
 Pathfinder::ColumnResult Pathfinder::GetVerticalOffset(Int3 _origin) {
@@ -105,7 +113,7 @@ std::optional<Int3> Pathfinder::GetSafePoint(Int3 _pos, int _stepUp) {
 // z+1, x-1, x+1, z-1
 const Int2 CARDINAL_DIRS[4] = { { 0, 1 }, { -1, 0 }, { 1, 0 }, { 0, -1 } };
 
-int Pathfinder::FindPathOptions(Int3 _current, float _maxDistance, Node** _options) {
+int Pathfinder::FindPathOptions(Int3 _current, float _maxDistance, uint32_t* _options) {
 	int count = 0;
 
 	// Stepping up a block is only allowed at all if there's headroom
@@ -131,8 +139,8 @@ int Pathfinder::FindPathOptions(Int3 _current, float _maxDistance, Node** _optio
 
 		// Create or fetch the node once here; the caller no longer has to
 		// hash the same position again during relaxation.
-		Node* next = OpenNode(*safe);
-		if (next->closed)
+		const uint32_t next = OpenNode(*safe);
+		if (nodes[next].closed)
 			continue;
 
 		_options[count++] = next;
@@ -142,67 +150,80 @@ int Pathfinder::FindPathOptions(Int3 _current, float _maxDistance, Node** _optio
 }
 
 std::vector<Int3> Pathfinder::FindPath(Int3 _start, Int3 _goal, float _width, float _height, float _maxDistance) {
+	std::vector<Int3> path;
+	FindPathInto(_start, _goal, path, _width, _height, _maxDistance);
+	return path;
+}
+
+void Pathfinder::FindPathInto(Int3 _start, Int3 _goal, std::vector<Int3>& _out, float _width, float _height,
+                              float _maxDistance) {
+	_out.clear();
 	Reset();
 
 	footprint = { std::max(1, int(std::floor(_width + 1.0f))), std::max(1, int(std::floor(_height + 1.0f))),
 		          std::max(1, int(std::floor(_width + 1.0f))) };
 	searchGoal = _goal;
 
-	Node* startNode = OpenNode(_start);
-	startNode->g = 0.0f;
-	startNode->f = startNode->h;
+	const uint32_t startNode = OpenNode(_start);
+	nodes[startNode].g = 0.0f;
+	nodes[startNode].f = nodes[startNode].h;
 
-	open.push({ startNode->f, startNode });
+	open.push({ nodes[startNode].f, startNode });
 
 	// Tracks the closest to goal node seen so far
-	Node* bestNode = startNode;
-	float bestDistance = startNode->h;
+	uint32_t bestNode = startNode;
+	float bestDistance = nodes[startNode].h;
 
-	Node* options[4];
+	uint32_t options[4];
 
 	while (!open.empty()) {
-		Node* current = open.top().node;
+		const uint32_t current = open.top().node;
 		open.pop();
 
-		if (current->closed)
+		Node& currentNode = nodes[current];
+		if (currentNode.closed)
 			continue;
 
-		current->closed = true;
+		currentNode.closed = true;
 
-		if (current->h < bestDistance) {
-			bestDistance = current->h;
+		if (currentNode.h < bestDistance) {
+			bestDistance = currentNode.h;
 			bestNode = current;
 		}
 
-		if (current->pos == _goal)
+		if (currentNode.pos == _goal)
 			break;
 
-		int optionCount = FindPathOptions(current->pos, _maxDistance, options);
+		// FindPathOptions can append nodes and reallocate the arena, so do not
+		// keep a Node reference alive across it.
+		const Int3 currentPos = currentNode.pos;
+		const float currentG = currentNode.g;
+		const int optionCount = FindPathOptions(currentPos, _maxDistance, options);
 		for (int i = 0; i < optionCount; i++) {
-			Node* next = options[i];
-			if (next->closed)
+			const uint32_t nextIndex = options[i];
+			Node& next = nodes[nextIndex];
+			if (next.closed)
 				continue;
 
-			float g = current->g + current->pos.Distance(next->pos);
-			if (g < next->g) {
-				next->g = g;
-				next->f = g + next->h;
-				next->parent = current;
-
-				open.push({ next->f, next });
+			const float g = currentG + currentPos.Distance(next.pos);
+			if (g < next.g) {
+				next.g = g;
+				next.f = g + next.h;
+				next.parent = int32_t(current);
+				open.push({ next.f, nextIndex });
 			}
 		}
 	}
 
 	if (bestNode == startNode)
-		return {};
+		return;
 
-	std::vector<Int3> path;
+	size_t length = 0;
+	for (int32_t n = int32_t(bestNode); n >= 0 && n != int32_t(startNode); n = nodes[size_t(n)].parent)
+		++length;
 
-	for (Node* n = bestNode; n != startNode; n = n->parent)
-		path.push_back(n->pos);
-
-	std::reverse(path.begin(), path.end());
-
-	return path;
+	_out.resize(length);
+	size_t write = length;
+	for (int32_t n = int32_t(bestNode); n >= 0 && n != int32_t(startNode); n = nodes[size_t(n)].parent)
+		_out[--write] = nodes[size_t(n)].pos;
 }
