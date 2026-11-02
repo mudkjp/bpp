@@ -29,10 +29,25 @@ void Chunk::GenerateHeightMap() {
 }
 
 void Chunk::GenerateHeightMapColumn(Int2 _pos) {
-	for (int y = CHUNK_HEIGHT - 1; y >= 0; y--) {
-		if (Blocks::blockProperties[GetBlock({ _pos.x, y, _pos.z })].lightOpacity > 0) {
-			SetHeightValue(_pos, uint8_t(y + 1));
-			return;
+	// Walk whole sub-chunks from the top instead of every individual Y. Empty
+	// slices can be answered from their uniform fill immediately.
+	for (int s = SUB_CHUNK_COUNT - 1; s >= 0; --s) {
+		const SubChunk& sub = subChunks[size_t(s)];
+		if (!sub.blocks) {
+			if (Blocks::blockProperties[sub.blockFill].lightOpacity > 0) {
+				SetHeightValue(_pos, uint8_t((s + 1) * SUB_CHUNK_SIZE));
+				return;
+			}
+			continue;
+		}
+
+		for (int ly = SUB_CHUNK_SIZE - 1; ly >= 0; --ly) {
+			const int y = s * SUB_CHUNK_SIZE + ly;
+			const BlockType block = sub.blocks->types[size_t(SubChunk::LocalIndex({ _pos.x, y, _pos.z }))];
+			if (Blocks::blockProperties[block].lightOpacity > 0) {
+				SetHeightValue(_pos, uint8_t(y + 1));
+				return;
+			}
 		}
 	}
 	SetHeightValue(_pos, 0);
