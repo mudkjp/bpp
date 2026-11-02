@@ -473,6 +473,8 @@ void Server::Startup() {
 
 		gameRuntime.world.RebuildUnloadedCandidates();
 		gameRuntime.worldHell.RebuildUnloadedCandidates();
+		gameRuntime.world.RebuildPopulateFrontier();
+		gameRuntime.worldHell.RebuildPopulateFrontier();
 
 		// Chunks are ready to load at this point.
 		auto loadSpawnChunks = [totalSpawnChunks, spawnChunkDistance](WorldManager& _world) {

@@ -70,5 +70,12 @@ struct BlockProperties {
 // Indexed by block ID, populated by registerAll()
 extern BlockProperties blockProperties[BLOCK_MAX];
 
+// Compact copies of the fields read in per-voxel light and random-tick loops.
+// They keep the hot tables cache-resident instead of walking the much larger
+// BlockProperties struct for every block.
+extern uint8_t lightOpacityTable[BLOCK_MAX];
+extern uint8_t lightEmissionTable[BLOCK_MAX];
+extern uint8_t ticksOnLoadTable[BLOCK_MAX];
+
 void RegisterBlockProperties();
 } // namespace Blocks

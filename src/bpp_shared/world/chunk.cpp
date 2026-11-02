@@ -34,7 +34,7 @@ void Chunk::GenerateHeightMapColumn(Int2 _pos) {
 	for (int s = SUB_CHUNK_COUNT - 1; s >= 0; --s) {
 		const SubChunk& sub = subChunks[size_t(s)];
 		if (!sub.blocks) {
-			if (Blocks::blockProperties[sub.blockFill].lightOpacity > 0) {
+			if (Blocks::lightOpacityTable[sub.blockFill] > 0) {
 				SetHeightValue(_pos, uint8_t((s + 1) * SUB_CHUNK_SIZE));
 				return;
 			}
@@ -44,7 +44,7 @@ void Chunk::GenerateHeightMapColumn(Int2 _pos) {
 		for (int ly = SUB_CHUNK_SIZE - 1; ly >= 0; --ly) {
 			const int y = s * SUB_CHUNK_SIZE + ly;
 			const BlockType block = sub.blocks->types[size_t(SubChunk::LocalIndex({ _pos.x, y, _pos.z }))];
-			if (Blocks::blockProperties[block].lightOpacity > 0) {
+			if (Blocks::lightOpacityTable[block] > 0) {
 				SetHeightValue(_pos, uint8_t(y + 1));
 				return;
 			}
@@ -75,7 +75,7 @@ void Chunk::GenerateSkylightMap() {
 			int skyLight = 15;
 			for (int y = height - 1; y >= 0; y--) {
 				skyLight -= std::max<int>(1,
-				                                     int(Blocks::blockProperties[GetBlock({ x, y, z })].lightOpacity));
+				                                     int(Blocks::lightOpacityTable[GetBlock({ x, y, z })]));
 				skyLight = std::max<int>(0, skyLight);
 				subChunks[size_t(y >> 4)].skyLight->Set(SubChunk::LocalIndex({ x, y, z }), uint8_t(skyLight));
 			}
@@ -109,7 +109,7 @@ void Chunk::RecalculateSkyLightColumn(Int2 _pos) {
 	int skyLight = 15;
 	for (int y = height - 1; y >= 0; y--) {
 		skyLight -= std::max<int>(1,
-		                                     int(Blocks::blockProperties[GetBlock({ _pos.x, y, _pos.z })].lightOpacity));
+		                                     int(Blocks::lightOpacityTable[GetBlock({ _pos.x, y, _pos.z })]));
 		skyLight = std::max<int>(0, skyLight);
 		SetSkyLight({ _pos.x, y, _pos.z }, uint8_t(skyLight));
 	}

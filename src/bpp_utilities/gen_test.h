@@ -100,6 +100,7 @@ public:
 	      savedChunks(std::move(_world.chunks)) {
 		world.chunks.clear(); // A moved-from map is only guaranteed to be valid, not empty
 		world.RebuildUnloadedCandidates();
+		world.RebuildPopulateFrontier();
 		world.InvalidateChunkInterest();
 		world.InvalidateChunkCache();
 		world.regionManager = &_emptyRegions;
@@ -112,6 +113,7 @@ public:
 		world.regionManager = savedRegions;
 		world.InitWorldSeed(savedSeed); // Also restores the shared biome generator
 		world.RebuildUnloadedCandidates();
+		world.RebuildPopulateFrontier();
 		world.InvalidateChunkInterest();
 		world.InvalidateChunkCache();
 	}
@@ -191,6 +193,7 @@ inline void DeleteAllChunks(WorldManager& _world) {
 	_world.pool.wait();
 	_world.chunks.clear();
 	_world.RebuildUnloadedCandidates();
+	_world.RebuildPopulateFrontier();
 	_world.InvalidateChunkInterest();
 	_world.InvalidateChunkCache();
 }

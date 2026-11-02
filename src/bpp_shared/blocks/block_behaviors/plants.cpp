@@ -457,7 +457,7 @@ void RegisterPlantBehaviors() {
 		Int3 aboveBlockPos = { _pos.x, _pos.y + 1, _pos.z };
 		auto lightLevel = _world.GetBlockLightValue(aboveBlockPos);
 		auto block = _world.GetBlockId(aboveBlockPos);
-		auto opacity = blockProperties[block].lightOpacity;
+		auto opacity = lightOpacityTable[block];
 
 		if (lightLevel < 4 && opacity > 2) {
 			// Decay
@@ -472,7 +472,7 @@ void RegisterPlantBehaviors() {
 			Int3 abovePos = { dx, dy + 1, dz };
 			auto aboveBlock = _world.GetBlockId(abovePos);
 			if (_world.GetBlockId({ dx, dy, dz }) == BLOCK_DIRT && _world.GetBlockLightValue(abovePos) >= 4 &&
-			    blockProperties[aboveBlock].lightOpacity <= 2) {
+			    lightOpacityTable[aboveBlock] <= 2) {
 				_world.SetBlock({ dx, dy, dz }, BLOCK_GRASS);
 			}
 		}

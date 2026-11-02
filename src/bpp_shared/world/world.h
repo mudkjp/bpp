@@ -71,6 +71,9 @@ private:
 	// Sorted index of chunks whose state is Unloaded. Maintained incrementally
 	// so PumpPipeline does not scan and sort the whole chunk map every tick.
 	std::set<std::pair<int, int>> unloadedChunkIndex;
+	// Sorted candidates for PopulateReady. Chunks stay here until populated or
+	// removed, so the tick path does not rebuild and sort all chunks.
+	std::set<std::pair<int, int>> populateFrontier;
 	std::unordered_map<Int32_2, std::vector<std::pair<Int3, Block>>> pendingBleedWrites;
 	std::mutex genDoneMutex;
 	std::deque<std::shared_ptr<Chunk>> genDoneQueue;
@@ -402,9 +405,13 @@ public:
 	// Rebuilds the sorted unloaded-chunk index after an external chunk-map
 	// replacement/clear (startup, utilities, tests).
 	void RebuildUnloadedCandidates();
+	void RebuildPopulateFrontier();
 
 	size_t PendingLoadCount() const {
 		return unloadedChunkIndex.size();
+	}
+	size_t PopulateFrontierCount() const {
+		return populateFrontier.size();
 	}
 
 	void TrackUnloadedChunk(Int32_2 _pos) {

@@ -120,10 +120,10 @@ void WorldWrapper::SetBlock(const Int3 _wpos, const BlockType _type, const uint8
 
 	// Making the assumption here that certain metadatas of
 	// blocks don't have differing light properties
-	const bool changesLighting = (Blocks::blockProperties[_type].lightOpacity !=
-	                              Blocks::blockProperties[oldBlock].lightOpacity) ||
-	                             (Blocks::blockProperties[_type].lightEmission !=
-	                              Blocks::blockProperties[oldBlock].lightEmission);
+	const bool changesLighting = (Blocks::lightOpacityTable[_type] !=
+	                              Blocks::lightOpacityTable[oldBlock]) ||
+	                             (Blocks::lightEmissionTable[_type] !=
+	                              Blocks::lightEmissionTable[oldBlock]);
 
 	// Unlight before changing the block
 	if (changesLighting) {
@@ -159,7 +159,7 @@ void WorldWrapper::SetBlock(const Int3 _wpos, const BlockType _type, const uint8
 		manager.lightManager.ScheduleLightUpdate(_wpos, LightType::Block);
 		int extendedBottom = std::min<int>(newHeight, oldHeight);
 		while (extendedBottom > 0 &&
-		       Blocks::blockProperties[chunk->GetBlock({ local.x, extendedBottom - 1, local.z })].lightOpacity == 0)
+		       Blocks::lightOpacityTable[chunk->GetBlock({ local.x, extendedBottom - 1, local.z })] == 0)
 			--extendedBottom;
 
 		if (newHeight != oldHeight) {

@@ -535,7 +535,7 @@ void WorldManager::PerformRandomTicks(const std::vector<ClientPosition>& _player
 			int posZ = int((randomBlockPos >> 8) & 15);
 			int posY = int((randomBlockPos >> 16) & 127);
 			auto block = chunk->GetBlock({ posX, posY, posZ });
-			if (!Blocks::blockProperties[block].ticksOnLoad)
+			if (!Blocks::ticksOnLoadTable[block])
 				continue;
 			if (auto func = Blocks::blockBehaviors[block].onTick) {
 				Int3 worldPos = { chunkOrigin.x + posX, posY, chunkOrigin.z + posZ };
@@ -620,6 +620,7 @@ void WorldManager::Shutdown() {
 			c->cpos = cpos;
 			chunks.emplace(cpos, std::move(c));
 			TrackUnloadedChunk(cpos);
+			populateFrontier.emplace(cpos.x, cpos.z);
 		}
 
 		// Wait until the chunk is ready
@@ -775,7 +776,7 @@ void WorldManager::SeedChunkLighting(Int32_2 _pos) {
 	// near the origin instead of at their world position.
 	bool hasEmitter = false;
 	for (int i = 1; i < BLOCK_MAX; ++i) {
-		if (Blocks::blockProperties[i].lightEmission > 0 && chunk->HasBlock(BlockType(i))) {
+		if (Blocks::lightEmissionTable[i] > 0 && chunk->HasBlock(BlockType(i))) {
 			hasEmitter = true;
 			break;
 		}
@@ -786,14 +787,14 @@ void WorldManager::SeedChunkLighting(Int32_2 _pos) {
 			if (sub.blocks) {
 				for (int i = 0; i < SubChunk::VOLUME; ++i) {
 					const BlockType block = sub.blocks->types[size_t(i)];
-					if (Blocks::blockProperties[block].lightEmission <= 0)
+					if (Blocks::lightEmissionTable[block] <= 0)
 						continue;
 					const int lx = i & (SUB_CHUNK_SIZE - 1);
 					const int ly = s * SUB_CHUNK_SIZE + (i >> 8);
 					const int lz = (i >> 4) & (SUB_CHUNK_SIZE - 1);
 					lightManager.ScheduleLightUpdate({ bx + lx, ly, bz + lz }, LightType::Block);
 				}
-			} else if (Blocks::blockProperties[sub.blockFill].lightEmission > 0) {
+			} else if (Blocks::lightEmissionTable[sub.blockFill] > 0) {
 				for (int i = 0; i < SubChunk::VOLUME; ++i) {
 					const int lx = i & (SUB_CHUNK_SIZE - 1);
 					const int ly = s * SUB_CHUNK_SIZE + (i >> 8);
@@ -811,6 +812,14 @@ void WorldManager::RebuildUnloadedCandidates() {
 	for (const auto& [pos, chunk] : chunks) {
 		if (chunk && chunk->state.load(std::memory_order_acquire) == ChunkState::Unloaded)
 			TrackUnloadedChunk(pos);
+	}
+}
+
+void WorldManager::RebuildPopulateFrontier() {
+	populateFrontier.clear();
+	for (const auto& [pos, chunk] : chunks) {
+		if (chunk && !chunk->isTerrainPopulated)
+			populateFrontier.emplace(pos.x, pos.z);
 	}
 }
 
@@ -859,6 +868,7 @@ void WorldManager::UpdateLoadRadius(const std::vector<ClientPosition>& _players)
 			c->cpos = pos;
 			chunks.emplace(pos, std::move(c));
 			TrackUnloadedChunk(pos);
+			populateFrontier.emplace(pos.x, pos.z);
 		}
 	}
 
@@ -880,6 +890,7 @@ void WorldManager::UpdateLoadRadius(const std::vector<ClientPosition>& _players)
 			entityManager.PruneEmptyContainer(it->first);
 			InvalidateChunkCache();
 			unloadedChunkIndex.erase({ it->first.x, it->first.z });
+			populateFrontier.erase({ it->first.x, it->first.z });
 			it = chunks.erase(it);
 			continue;
 		}
@@ -893,6 +904,7 @@ void WorldManager::UpdateLoadRadius(const std::vector<ClientPosition>& _players)
 		entityManager.EraseContainer(it->first);
 		InvalidateChunkCache();
 		unloadedChunkIndex.erase({ it->first.x, it->first.z });
+		populateFrontier.erase({ it->first.x, it->first.z });
 		it = chunks.erase(it);
 	}
 }
@@ -1031,27 +1043,6 @@ void WorldManager::PumpPipeline(const std::vector<ClientPosition>& _players) {
 }
 
 void WorldManager::PopulateReady(int _maxPopulates) {
-	// Try and match beta's population order its finicky lol
-	std::vector<Int32_2> ordered;
-	ordered.reserve(chunks.size());
-	for (auto& [pos, chunk] : chunks) {
-		if (chunk->isTerrainPopulated)
-			continue;
-		// Only consider chunks that could possibly be ready
-		// This excludes border chunks on the positive X and Z axes since their population needs neighbors that can't exist
-		if (!chunks.contains({ pos.x + 1, pos.z }) || !chunks.contains({ pos.x, pos.z + 1 }) ||
-		    !chunks.contains({ pos.x + 1, pos.z + 1 }))
-			continue;
-		ordered.push_back(pos);
-	}
-
-	// Sort by population order that beta 1.7.3 seems to use
-	std::sort(ordered.begin(), ordered.end(), [](const Int32_2& _a, const Int32_2& _b) {
-		if (_a.x != _b.x)
-			return _a.x < _b.x;
-		return _a.z < _b.z;
-	});
-
 	// Reuse generators across chunks: PopulateChunk resets its RNG from the world seed,
 	// so perm tables only need rebuilding when the world seed changes.
 	thread_local std::unique_ptr<OverworldGenerator> tlOverworld;
@@ -1071,16 +1062,32 @@ void WorldManager::PopulateReady(int _maxPopulates) {
 	// We break if the target chunk isn't ready yet so population order is guaranteed
 	std::unordered_set<Int32_2> populatedThisTick;
 	int populatedCount = 0;
-	for (const Int32_2& pos : ordered) {
+	auto frontierIt = populateFrontier.begin();
+	while (frontierIt != populateFrontier.end()) {
 		if (populatedCount >= _maxPopulates)
 			break;
+
+		const Int32_2 pos{ frontierIt->first, frontierIt->second };
+		auto cit = chunks.find(pos);
+		if (cit == chunks.end() || cit->second->isTerrainPopulated) {
+			frontierIt = populateFrontier.erase(frontierIt);
+			continue;
+		}
+
+		// Border chunks are not candidates until their positive neighbours exist.
+		if (!chunks.contains({ pos.x + 1, pos.z }) || !chunks.contains({ pos.x, pos.z + 1 }) ||
+		    !chunks.contains({ pos.x + 1, pos.z + 1 })) {
+			++frontierIt;
+			continue;
+		}
+
 		if (!CanPopulateDirect(pos))
 			break;
-		if (populatedThisTick.contains(pos))
+		if (populatedThisTick.contains(pos)) {
+			++frontierIt;
 			continue;
-		auto cit = chunks.find(pos);
-		if (cit == chunks.end())
-			break;
+		}
+
 		cit->second->state.store(ChunkState::Populating, std::memory_order_release);
 		WorldWrapper wrapper(*this, pos);
 		wrapper.centerChunkPos = pos;
@@ -1097,6 +1104,7 @@ void WorldManager::PopulateReady(int _maxPopulates) {
 		++populatedCount;
 		wrapper.FreeChunkRegion();
 		FlushBleedWrites();
+		frontierIt = populateFrontier.erase(frontierIt);
 	}
 }
 
@@ -1169,10 +1177,10 @@ void WorldManager::SetBlock(const Int3 _wpos, const BlockType _blockType, const 
 
 	// Making the assumption here that certain metadatas of
 	// blocks don't have differing light properties
-	const bool changesLighting = (Blocks::blockProperties[_blockType].lightOpacity !=
-	                              Blocks::blockProperties[oldBlock].lightOpacity) ||
-	                             (Blocks::blockProperties[_blockType].lightEmission !=
-	                              Blocks::blockProperties[oldBlock].lightEmission);
+	const bool changesLighting = (Blocks::lightOpacityTable[_blockType] !=
+	                              Blocks::lightOpacityTable[oldBlock]) ||
+	                             (Blocks::lightEmissionTable[_blockType] !=
+	                              Blocks::lightEmissionTable[oldBlock]);
 
 	// Unlight before changing the block
 	if (changesLighting) {
@@ -1216,7 +1224,7 @@ void WorldManager::SetBlock(const Int3 _wpos, const BlockType _blockType, const 
 		lightManager.ScheduleLightUpdate(pos, LightType::Block);
 		int extendedBottom = std::min<int>(newHeight, oldHeight);
 		while (extendedBottom > 0 &&
-		       Blocks::blockProperties[chunk->GetBlock({ localXz.x, extendedBottom - 1, localXz.z })].lightOpacity == 0)
+		       Blocks::lightOpacityTable[chunk->GetBlock({ localXz.x, extendedBottom - 1, localXz.z })] == 0)
 			--extendedBottom;
 
 		if (newHeight != oldHeight) {
@@ -1318,7 +1326,7 @@ void WorldManager::FillVolume(Int3 _posA, Int3 _posB, BlockType _type, uint8_t _
 		return;
 	}
 
-	const uint8_t emission = uint8_t(Blocks::blockProperties[_type].lightEmission);
+	const uint8_t emission = uint8_t(Blocks::lightEmissionTable[_type]);
 
 	for (int cx = mn.x >> 4; cx <= (mx.x >> 4); cx++) {
 		for (int cz = mn.z >> 4; cz <= (mx.z >> 4); cz++) {
@@ -1427,6 +1435,7 @@ void WorldManager::InitSpawn() {
 			chunk->cpos = pos;
 			chunks[pos] = std::move(chunk);
 			TrackUnloadedChunk(pos);
+			populateFrontier.emplace(pos.x, pos.z);
 			while (GetFirstUncoveredBlock(_x, _z) == BlockType::BLOCK_INVALID) {
 				this->PumpPipeline({});
 				this->DrainGenQueue();
@@ -1450,6 +1459,7 @@ void WorldManager::InitSpawn() {
 	this->spawnPoint = { sx, 64, sz };
 	chunks.clear(); // Clear all chunks so we can start fresh from the spawn area
 	unloadedChunkIndex.clear();
+	populateFrontier.clear();
 	InvalidateChunkInterest();
 	InvalidateChunkCache();
 }

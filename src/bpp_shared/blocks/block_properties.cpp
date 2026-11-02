@@ -16,6 +16,9 @@ namespace Blocks {
 
 // Global table definitions
 BlockProperties blockProperties[BLOCK_MAX] = {};
+uint8_t lightOpacityTable[BLOCK_MAX] = {};
+uint8_t lightEmissionTable[BLOCK_MAX] = {};
+uint8_t ticksOnLoadTable[BLOCK_MAX] = {};
 
 // Behavior helper functions
 bool CanFallAt(WorldAccess& _world, Int3 _position) {
@@ -1150,6 +1153,12 @@ void RegisterBlockProperties() {
 		.isNormalCube = false,
 		.enableStats = false,
 	};
+
+	for (int i = 0; i < BLOCK_MAX; ++i) {
+		lightOpacityTable[i] = blockProperties[i].lightOpacity;
+		lightEmissionTable[i] = blockProperties[i].lightEmission;
+		ticksOnLoadTable[i] = blockProperties[i].ticksOnLoad ? 1 : 0;
+	}
 }
 
 } // namespace Blocks

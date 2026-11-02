@@ -85,7 +85,7 @@ void Lighter::PropagateLightAt(int _x, int _y, int _z, LightType _type, WorldMan
 
 	int lx = _x & 15, lz = _z & 15;
 	BlockType blockId = chunk->GetBlock({ lx, _y, lz });
-	int opacity = Blocks::blockProperties[blockId].lightOpacity;
+	int opacity = Blocks::lightOpacityTable[blockId];
 	if (opacity == 0)
 		opacity = 1;
 
@@ -147,7 +147,7 @@ void Lighter::PropagateLightAt(int _x, int _y, int _z, LightType _type, WorldMan
 			                                   .light{ chunk->GetBlockLight({ lx, _y, lz }), uint8_t(newVal) } },
 			                     chunk->cpos);
 	} else {
-		int emitted = Blocks::blockProperties[blockId].lightEmission;
+		int emitted = Blocks::lightEmissionTable[blockId];
 		if (opacity < 15) {
 			newVal = std::max<int>(emitted, scanBest() - opacity);
 		} else {

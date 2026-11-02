@@ -196,7 +196,7 @@ void RegisterMiscBehaviors() {
 	blockBehaviors[BLOCK_ICE].onTick = [](WorldManager& _world, Int3 _pos, uint8_t /*_meta*/,
 	                                      Java::Random& /*_random*/) -> void {
 		// Melt!
-		if (_world.GetBlockLight(_pos) > 11 - Blocks::blockProperties[BLOCK_ICE].lightOpacity) {
+		if (_world.GetBlockLight(_pos) > 11 - Blocks::lightOpacityTable[BLOCK_ICE]) {
 			_world.SetBlock(_pos, BLOCK_WATER_FLOWING);
 		}
 	};

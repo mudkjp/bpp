@@ -19,7 +19,7 @@ inline constexpr bool IsLiquid(BlockType _t) {
 	return Blocks::blockProperties[_t].material.isLiquid;
 }
 inline constexpr bool IsOpaque(BlockType _t) {
-	return Blocks::blockProperties[_t].lightOpacity > 0;
+	return Blocks::lightOpacityTable[_t] > 0;
 }
 
 // Used for generating features in the world
