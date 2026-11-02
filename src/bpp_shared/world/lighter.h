@@ -94,19 +94,21 @@ public:
 	void UnlightAt(int _x, int _y, int _z, LightType _type, WorldManager& _world,
 	               Chunk* _centerChunk = nullptr);
 
-	// Process up to `maxIterations` light-queue entries this call.
-	bool ProcessLightQueue(WorldManager& _world, int _maxIterations = INT_MAX);
+	// Process at most `_maxWork` voxels of queued light updates this call.
+	// INT_MAX drains the whole queue (startup/shutdown). Entries are served
+	// FIFO so a budget cannot starve older work behind BFS fan-out.
+	bool ProcessLightQueue(WorldManager& _world, int _maxWork = INT_MAX);
 
 	// Number of currently queued light updates (diagnostics/tests).
 	size_t PendingLightUpdates() const {
-		return lightQueue.size();
+		return lightQueue.size() - lightQueueHead;
 	}
 
 	// Schedule a single-block update; bypasses merge (used for BFS fan-out).
 	void ScheduleLightUpdate(Int3 _pos, LightType _type) {
 		if (_pos.y < 0 || _pos.y >= CHUNK_HEIGHT)
 			return;
-		if (lightQueue.size() < MAX_LIGHT_QUEUE)
+		if (PendingLightUpdates() < MAX_LIGHT_QUEUE)
 			lightQueue.push_back({ _pos, _pos, _type });
 	}
 
@@ -117,7 +119,7 @@ public:
 		if (_mn.y > _mx.y)
 			return;
 
-		size_t checkCount = std::min<int>(lightQueue.size(), size_t(5));
+		size_t checkCount = std::min<size_t>(PendingLightUpdates(), size_t(5));
 		for (size_t i = 0; i < checkCount; ++i) {
 			LightRegion& r = lightQueue[size_t(lightQueue.size() - 1 - i)];
 			if (r.type != _type)
@@ -126,13 +128,16 @@ public:
 				return;
 		}
 
-		if (lightQueue.size() >= MAX_LIGHT_QUEUE)
+		if (PendingLightUpdates() >= MAX_LIGHT_QUEUE)
 			return;
 		lightQueue.push_back({ _mn, _mx, _type });
 	}
 
 private:
 	std::vector<LightRegion> lightQueue;
+	// Consumed prefix of lightQueue. FIFO processing keeps a bounded budget
+	// from starving older entries; the prefix is compacted periodically.
+	size_t lightQueueHead = 0;
 	std::vector<UnlightUpdate> unlightQueue;
 	int processingDepth = 0;
 };

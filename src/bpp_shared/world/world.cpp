@@ -465,7 +465,11 @@ void WorldManager::Tick(const std::vector<ClientPosition>& _players, bool _advan
 				_profiler->Record(TickTask::Autosave, Clock::now() - saveStart);
 		}
 	}
-	lightManager.ProcessLightQueue(*this, INT_MAX);
+	// Bound relight spikes (explosions, large fills, mass sky removal).
+	// Remaining work carries over to the next tick; FIFO order in the lighter
+	// prevents old entries from being starved.
+	static constexpr int LIGHT_TICK_WORK_BUDGET = 16384;
+	lightManager.ProcessLightQueue(*this, LIGHT_TICK_WORK_BUDGET);
 	auto unloadingStart = _profiler ? Clock::now() : Clock::time_point{};
 	UpdateLoadRadius(_players);
 	if (_profiler)

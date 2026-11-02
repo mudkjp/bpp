@@ -174,7 +174,7 @@ void Lighter::PropagateLightAt(int _x, int _y, int _z, LightType _type, WorldMan
 		if (_ny < 0 || _ny >= CHUNK_HEIGHT || !_nc)
 			return;
 		int expected = std::max<int>(0, newVal - 1);
-		if (neighbor(_i, _nc, _nlx, _ny, _nlz) < expected && lightQueue.size() < MAX_LIGHT_QUEUE)
+		if (neighbor(_i, _nc, _nlx, _ny, _nlz) < expected && PendingLightUpdates() < MAX_LIGHT_QUEUE)
 			lightQueue.push_back({ { _nx, _ny, _nz }, { _nx, _ny, _nz }, _type });
 	};
 
@@ -296,35 +296,51 @@ void Lighter::UnlightAt(int _x, int _y, int _z, LightType _type, WorldManager& _
 	}
 }
 
-bool Lighter::ProcessLightQueue(WorldManager& _world, int _maxIterations) {
+bool Lighter::ProcessLightQueue(WorldManager& _world, int _maxWork) {
 	if (processingDepth >= 50)
-		return !lightQueue.empty();
+		return PendingLightUpdates() > 0;
 	++processingDepth;
 
 	ChunkCache cache;
-	int iters = 0;
+	const uint64_t budget = _maxWork <= 0 ? 0 : uint64_t(_maxWork);
+	uint64_t work = 0;
 
-	while (!lightQueue.empty() && iters < _maxIterations) {
-		LightRegion region = lightQueue.back();
-		lightQueue.pop_back();
-		++iters;
+	while (lightQueueHead < lightQueue.size()) {
+		if (budget == 0)
+			break;
 
-		int dx = region.max.x - region.min.x + 1;
-		int dy = region.max.y - region.min.y + 1;
-		int dz = region.max.z - region.min.z + 1;
-		if (dx * dy * dz > 32768)
+		const LightRegion region = lightQueue[lightQueueHead];
+		const uint64_t volume = uint64_t(region.max.x - region.min.x + 1) *
+		                        uint64_t(region.max.y - region.min.y + 1) *
+		                        uint64_t(region.max.z - region.min.z + 1);
+		if (volume > 32768) {
+			++lightQueueHead;
 			continue;
+		}
+		// Always allow at least one region so a region larger than the whole
+		// budget cannot wedge the queue.
+		if (work > 0 && work + volume > budget)
+			break;
+		++lightQueueHead;
+		work += volume;
 
-		region.min.y = std::max<int>(region.min.y, 0);
-		region.max.y = std::min<int>(region.max.y, CHUNK_HEIGHT - 1);
+		LightRegion expanded = region;
+		expanded.min.y = std::max<int>(expanded.min.y, 0);
+		expanded.max.y = std::min<int>(expanded.max.y, CHUNK_HEIGHT - 1);
 
-		for (int x = region.min.x; x <= region.max.x; ++x)
-			for (int z = region.min.z; z <= region.max.z; ++z)
-				for (int y = region.min.y; y <= region.max.y; ++y)
-					PropagateLightAt(x, y, z, region.type, _world, cache);
+		for (int x = expanded.min.x; x <= expanded.max.x; ++x)
+			for (int z = expanded.min.z; z <= expanded.max.z; ++z)
+				for (int y = expanded.min.y; y <= expanded.max.y; ++y)
+					PropagateLightAt(x, y, z, expanded.type, _world, cache);
+	}
+
+	// Compact the consumed prefix once it is worth the memmove. Keeping a head
+	// index avoids moving the pending tail on every budgeted tick.
+	if (lightQueueHead >= 4096 && lightQueueHead * 2 >= lightQueue.size()) {
+		lightQueue.erase(lightQueue.begin(), lightQueue.begin() + static_cast<std::ptrdiff_t>(lightQueueHead));
+		lightQueueHead = 0;
 	}
 
 	--processingDepth;
-
-	return !lightQueue.empty();
+	return PendingLightUpdates() > 0;
 }
