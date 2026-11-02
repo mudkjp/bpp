@@ -2205,6 +2205,64 @@ void TestWindow0ContainerSkip() {
 	CHECK(session.stream.GetRawWriteBuffer().empty());
 }
 
+void TestPendingWriteServesNewest() {
+	TempDir temp("pending-write");
+	const auto regionDir = temp.path / "region";
+	std::filesystem::create_directories(regionDir);
+	RegionManager regions;
+	CHECK(regions.Initialize(regionDir.string()));
+
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 0, 0 };
+	chunk->state.store(ChunkState::Generated);
+	chunk->SetBlockRaw({ 0, 0, 0 }, BLOCK_STONE);
+	chunk->SetBlockRaw({ 1, 0, 0 }, BLOCK_STONE);
+	regions.SaveChunk(chunk);
+	regions.FlushAll();
+
+	// Newer edits live only in the pending snapshot until the next pump/flush.
+	chunk->SetBlockRaw({ 1, 0, 0 }, BLOCK_DIRT);
+	chunk->SetBlockRaw({ 2, 0, 0 }, BLOCK_GLASS);
+	regions.SaveChunk(chunk);
+	CHECK(regions.ChunkExists(Int32_2{ 0, 0 }));
+
+	regions.LoadChunk(Int32_2{ 0, 0 });
+	auto loaded = regions.GetChunk(Int32_2{ 0, 0 });
+	CHECK(loaded != nullptr);
+	if (loaded) {
+		CHECK_EQ(int(loaded->GetBlock({ 1, 0, 0 })), int(BLOCK_DIRT));
+		CHECK_EQ(int(loaded->GetBlock({ 2, 0, 0 })), int(BLOCK_GLASS));
+		CHECK(!loaded->isModified);
+	}
+
+	// The same data must be on disk once the write is flushed.
+	regions.FlushAll();
+	regions.LoadChunk(Int32_2{ 0, 0 });
+	regions.iopool.wait();
+	loaded = regions.GetChunk(Int32_2{ 0, 0 });
+	CHECK(loaded != nullptr);
+	if (loaded) {
+		CHECK_EQ(int(loaded->GetBlock({ 1, 0, 0 })), int(BLOCK_DIRT));
+		CHECK_EQ(int(loaded->GetBlock({ 2, 0, 0 })), int(BLOCK_GLASS));
+	}
+
+	// A chunk in a region that has never been written still loads from pending.
+	auto fresh = std::make_shared<Chunk>();
+	fresh->cpos = { 40, 0 };
+	fresh->state.store(ChunkState::Generated);
+	fresh->SetBlockRaw({ 3, 0, 0 }, BLOCK_GLASS);
+	regions.SaveChunk(fresh);
+	CHECK(regions.ChunkExists(Int32_2{ 40, 0 }));
+	regions.LoadChunk(Int32_2{ 40, 0 });
+	auto freshLoaded = regions.GetChunk(Int32_2{ 40, 0 });
+	CHECK(freshLoaded != nullptr);
+	if (freshLoaded)
+		CHECK_EQ(int(freshLoaded->GetBlock({ 3, 0, 0 })), int(BLOCK_GLASS));
+
+	regions.FlushAll();
+	regions.Release();
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -2428,6 +2486,7 @@ std::vector<TestCase> Tests() {
 		{ "light_propagation_early_out", TestLightPropagationEarlyOut },
 		{ "unlight_lava_pool", TestUnlightLavaPool },
 		{ "window0_container_skip", TestWindow0ContainerSkip },
+		{ "pending_write_serves_newest", TestPendingWriteServesNewest },
 		{ "command_literal_index", TestCommandLiteralIndex },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "collision_shape_storage", TestCollisionShapeStorage },
@@ -3479,6 +3538,39 @@ void RunBenchmarks() {
 		return size_t(climateLoadWorld.GetBiome({ 8, 8 }));
 	});
 	climateRegions.Release();
+
+	TempDir pendingTemp("region-pending-bench");
+	const auto pendingDir = pendingTemp.path / "region";
+	std::filesystem::create_directories(pendingDir);
+	RegionManager pendingRegions;
+	pendingRegions.Initialize(pendingDir.string());
+	auto pendingChunk = std::make_shared<Chunk>();
+	BuildSyntheticChunk(*pendingChunk);
+	pendingRegions.SaveChunk(pendingChunk);
+
+	TempDir diskTemp("region-disk-bench");
+	const auto diskDir = diskTemp.path / "region";
+	std::filesystem::create_directories(diskDir);
+	RegionManager diskRegions;
+	diskRegions.Initialize(diskDir.string());
+	auto diskChunk = std::make_shared<Chunk>();
+	BuildSyntheticChunk(*diskChunk);
+	diskRegions.SaveChunk(diskChunk);
+	diskRegions.FlushAll();
+
+	Bench("chunk_load_pending_snapshot", 0, [&] {
+		pendingRegions.LoadChunk(Int32_2{ 0, 0 });
+		auto chunk = pendingRegions.GetChunk(Int32_2{ 0, 0 });
+		return chunk ? size_t(chunk->GetBlock({ 7, 42, 9 })) : size_t(0);
+	});
+	Bench("chunk_load_disk", 0, [&] {
+		diskRegions.LoadChunk(Int32_2{ 0, 0 });
+		diskRegions.iopool.wait();
+		auto chunk = diskRegions.GetChunk(Int32_2{ 0, 0 });
+		return chunk ? size_t(chunk->GetBlock({ 7, 42, 9 })) : size_t(0);
+	});
+	pendingRegions.Release();
+	diskRegions.Release();
 
 	TempDir rewriteTemp("region-rewrite-bench");
 	{
