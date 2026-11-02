@@ -866,6 +866,40 @@ void TestPumpPipelineIndex() {
 	regions.Release();
 }
 
+void TestBlockLookupTables() {
+	for (int i = 0; i < BLOCK_MAX; ++i) {
+		CHECK_EQ(int(Blocks::lightOpacityTable[i]), int(Blocks::blockProperties[i].lightOpacity));
+		CHECK_EQ(int(Blocks::lightEmissionTable[i]), int(Blocks::blockProperties[i].lightEmission));
+		CHECK_EQ(int(Blocks::ticksOnLoadTable[i]), Blocks::blockProperties[i].ticksOnLoad ? 1 : 0);
+	}
+}
+
+void TestPopulateFrontier() {
+	WorldManager world;
+	for (int x = 0; x <= 1; ++x) {
+		for (int z = 0; z <= 1; ++z) {
+			auto chunk = std::make_shared<Chunk>();
+			chunk->cpos = { x, z };
+			chunk->state.store(ChunkState::Generated);
+			chunk->FillSlices(0, 64, BLOCK_STONE);
+			world.chunks[Int32_2{ x, z }] = std::move(chunk);
+		}
+	}
+	world.RebuildPopulateFrontier();
+	CHECK_EQ(world.PopulateFrontierCount(), size_t(4));
+
+	world.PopulateReady(1);
+	CHECK_EQ(world.PopulateFrontierCount(), size_t(3));
+	auto first = world.chunks.find(Int32_2{ 0, 0 });
+	CHECK(first != world.chunks.end());
+	if (first != world.chunks.end())
+		CHECK(first->second->isTerrainPopulated);
+
+	world.chunks.erase(Int32_2{ 1, 1 });
+	world.RebuildPopulateFrontier();
+	CHECK_EQ(world.PopulateFrontierCount(), size_t(2));
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -997,10 +1031,12 @@ std::vector<TestCase> Tests() {
 		{ "chunk_interest_cache", TestChunkInterestCache },
 		{ "unloaded_chunk_index", TestUnloadedChunkIndex },
 		{ "pump_pipeline_index", TestPumpPipelineIndex },
+		{ "populate_frontier", TestPopulateFrontier },
 		{ "chunk_light_emitters", TestChunkLightEmitters },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "entity_index", TestEntityIndex },
 		{ "equipment_dirty_gating", TestEquipmentDirtyGating },
+		{ "block_lookup_tables", TestBlockLookupTables },
 		{ "subregion_dedup", TestSubRegionDedup },
 		{ "pathfinder_flat", TestPathfinderFlat },
 		{ "region_fixture", TestRegionFixture },
@@ -1157,6 +1193,25 @@ void RunBenchmarks() {
 		return interestWorld.chunks.size();
 	});
 
+	WorldManager randomTickWorld;
+	randomTickWorld.SetViewRadius(20);
+	for (int x = -10; x <= 10; ++x) {
+		for (int z = -10; z <= 10; ++z) {
+			auto chunk = std::make_shared<Chunk>();
+			chunk->cpos = { x, z };
+			chunk->state.store(ChunkState::Populated);
+			chunk->isTerrainPopulated = true;
+			chunk->FillSlices(0, 64, BLOCK_STONE);
+			randomTickWorld.chunks[Int32_2{ x, z }] = std::move(chunk);
+		}
+	}
+	std::vector<ClientPosition> randomTickPlayers(1);
+	randomTickPlayers[0].pos = { 8.0, 65.0, 8.0 };
+	Bench("random_ticks_441_chunks", 0, [&] {
+		randomTickWorld.PerformRandomTicks(randomTickPlayers);
+		return randomTickWorld.chunks.size();
+	});
+
 	WorldManager pipelineWorld;
 	for (int i = 0; i < 10000; ++i) {
 		auto chunk = std::make_shared<Chunk>();
@@ -1168,6 +1223,20 @@ void RunBenchmarks() {
 	Bench("pipeline_idle_10k", 0, [&] {
 		pipelineWorld.PumpPipeline({});
 		return pipelineWorld.chunks.size();
+	});
+
+	WorldManager populateWorld;
+	for (int i = 0; i < 10000; ++i) {
+		auto chunk = std::make_shared<Chunk>();
+		chunk->cpos = { i % 100, i / 100 };
+		chunk->state.store(ChunkState::Populated);
+		chunk->isTerrainPopulated = true;
+		populateWorld.chunks.emplace(chunk->cpos, std::move(chunk));
+	}
+	populateWorld.RebuildPopulateFrontier();
+	Bench("populate_idle_10k", 0, [&] {
+		populateWorld.PopulateReady();
+		return populateWorld.chunks.size();
 	});
 
 	Runtime benchRuntime;
