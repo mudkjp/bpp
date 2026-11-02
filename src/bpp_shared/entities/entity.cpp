@@ -163,7 +163,8 @@ void Entity::UpdateEntityPhysicsState() {
 		fireTicks = 600;
 	}
 
-	const bool wet = IsWet();
+	auto fd = MathHelper::FloorDouble;
+	wet = inWater || world->CanRainHitSpot({ fd(position.x), fd(position.y), fd(position.z) });
 
 	bool inFire = inLava || world->IsMaterialInAabb(GetFireCollider(), Material::Fire());
 	if (inFire) {
@@ -194,8 +195,9 @@ void Entity::UpdateEntityPhysicsState() {
 }
 
 bool Entity::IsWet() {
-	auto fd = MathHelper::FloorDouble;
-	return inWater || world->CanRainHitSpot({ fd(position.x), fd(position.y), fd(position.z) });
+	// Refreshed once per tick by UpdateEntityPhysicsState. Callers such as the
+	// wolf AI run after Entity::Tick, so this is the current tick's result.
+	return wet;
 }
 
 void Entity::MountEntity(std::shared_ptr<Entity> _entity) {

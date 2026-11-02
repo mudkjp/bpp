@@ -142,6 +142,9 @@ struct Entity {
 	bool inWeb : 1 = false; // Inside a cobweb
 	bool inWater : 1 = false;
 	bool inLava : 1 = false;
+	// Wetness computed by UpdateEntityPhysicsState for the current tick.
+	// IsWet() returns this instead of rescanning the rain column.
+	bool wet : 1 = false;
 	bool onLadder : 1 = false;
 
 	float fallDistance = 0.0f;
