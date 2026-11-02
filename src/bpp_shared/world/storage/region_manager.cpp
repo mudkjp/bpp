@@ -63,6 +63,10 @@ bool RegionManager::Release() {
 	pendingRegions.clear();
 
 	{
+		std::lock_guard lk(pendingWritesMutex);
+		pendingWrites.clear();
+	}
+	{
 		std::lock_guard lk(outChunksMutex);
 		outChunks.clear();
 	}
@@ -126,6 +130,11 @@ bool RegionManager::RegionExists(const Int32_2 _rpos) {
 }
 
 bool RegionManager::ChunkExists(const Int32_2 _cpos) {
+	{
+		std::lock_guard lk(pendingWritesMutex);
+		if (pendingWrites.contains(_cpos))
+			return true;
+	}
 	if (!RegionExists({ _cpos.x >> 5, _cpos.z >> 5 }))
 		return false;
 	LoadState state = LoadState::FAILED;
@@ -162,6 +171,7 @@ void RegionManager::SaveChunk(const std::shared_ptr<Chunk> _chunk, bool _unloadE
 	snapshot->isModified = _chunk->isModified;
 	snapshot->spawnChunk = _chunk->spawnChunk;
 	snapshot->refreshLighting = _chunk->refreshLighting;
+	snapshot->climateBaked = _chunk->climateBaked;
 	snapshot->state.store(_chunk->state.load(std::memory_order_acquire));
 	snapshot->inUse.store(false);
 	snapshot->CopyStorageFrom(*_chunk);
@@ -178,11 +188,60 @@ void RegionManager::SaveChunk(const std::shared_ptr<Chunk> _chunk, bool _unloadE
 	SnapshotContainer container{ std::move(snapshot), std::move(entities) };
 	const Int32_2 cpos = container.chunkSnapshot->cpos;
 
-	std::lock_guard lk(saveQueueMutex);
-	saveQueue.insert_or_assign(cpos, std::move(container));
+	{
+		std::lock_guard lk(saveQueueMutex);
+		saveQueue.insert_or_assign(cpos, container);
+	}
+	{
+		std::lock_guard lk(pendingWritesMutex);
+		pendingWrites.insert_or_assign(cpos, std::move(container));
+	}
+}
+
+std::shared_ptr<Chunk> RegionManager::ClonePendingSnapshot(Int32_2 _cpos) {
+	SnapshotContainer snapshot;
+	{
+		std::lock_guard lk(pendingWritesMutex);
+		auto it = pendingWrites.find(_cpos);
+		if (it == pendingWrites.end())
+			return nullptr;
+		snapshot = it->second;
+	}
+
+	const auto& source = snapshot.chunkSnapshot;
+	if (!source)
+		return nullptr;
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = source->cpos;
+	chunk->isTerrainPopulated = source->isTerrainPopulated;
+	chunk->spawnChunk = source->spawnChunk;
+	chunk->refreshLighting = source->refreshLighting;
+	chunk->climateBaked = source->climateBaked;
+	ChunkState savedState = source->state.load(std::memory_order_acquire);
+	if (savedState < ChunkState::Generated)
+		savedState = ChunkState::Generated;
+	chunk->state.store(savedState, std::memory_order_release);
+	chunk->inUse.store(false, std::memory_order_release);
+	chunk->CopyStorageFrom(*source);
+	std::memcpy(chunk->heightMap, source->heightMap, sizeof(chunk->heightMap));
+	std::memcpy(chunk->temperature, source->temperature, sizeof(chunk->temperature));
+	std::memcpy(chunk->humidity, source->humidity, sizeof(chunk->humidity));
+	chunk->tileEntities = source->tileEntities;
+	if (snapshot.entitySnapshot)
+		chunk->entityTags = *snapshot.entitySnapshot;
+	chunk->isModified = false;
+	return chunk;
 }
 
 void RegionManager::LoadChunk(const Int32_2 _cpos) {
+	// A newer snapshot may exist in memory while its disk write is still
+	// queued/in flight. Serve that instead of reading stale region data.
+	if (auto pending = ClonePendingSnapshot(_cpos)) {
+		std::lock_guard lk(outChunksMutex);
+		outChunks[_cpos] = std::move(pending);
+		return;
+	}
+
 	Int32_2 rpos{ _cpos.x >> 5, _cpos.z >> 5 };
 	if (!RegionExists(rpos)) {
 		MarkLoadFailed(_cpos);
@@ -261,15 +320,22 @@ void RegionManager::PumpPipeline() {
 			currentTime = world->tickScheduler.currentTick;
 		iopool.detach_task([chunk, region, currentTime, entitySnapshot, this]() {
 			try {
-				if (ioFatal.load())
-					return;                                                // Don't write anything after a failure
-				if (!region->AddChunk(chunk, currentTime, entitySnapshot))
-					FatalIo("AddChunk failed", chunk->cpos);
+				if (!ioFatal.load()) {
+					if (!region->AddChunk(chunk, currentTime, entitySnapshot))
+						FatalIo("AddChunk failed", chunk->cpos);
+				}
 			} catch (const std::exception& e) {
 				FatalIo(std::string("save threw: ") + e.what(), chunk->cpos);
 			} catch (...) {
 				FatalIo("save threw unknown exception", chunk->cpos);
 			}
+
+			// Only clear the pending entry if a newer snapshot has not replaced
+			// it while this write was in flight.
+			std::lock_guard lk(pendingWritesMutex);
+			auto it = pendingWrites.find(chunk->cpos);
+			if (it != pendingWrites.end() && it->second.chunkSnapshot == chunk)
+				pendingWrites.erase(it);
 		});
 	}
 

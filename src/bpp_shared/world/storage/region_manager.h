@@ -31,6 +31,11 @@ struct RegionManager {
 	// pending snapshot in O(1) instead of scanning the whole queue.
 	std::unordered_map<Int32_2, SnapshotContainer> saveQueue;
 
+	// Newest snapshots that have not reached disk yet. Loads observe these
+	// instead of reading a stale region file while a save is queued/in flight.
+	std::mutex pendingWritesMutex;
+	std::unordered_map<Int32_2, SnapshotContainer> pendingWrites;
+
 	std::mutex outChunksMutex;
 	std::unordered_map<Int32_2, std::shared_ptr<Chunk>> outChunks;
 
@@ -95,6 +100,7 @@ private:
 	bool TryMergePendingRegion(std::shared_ptr<Region>& _region);
 	bool CreateRegionOnCache(const Int2 _rpos);
 	void MarkLoadFailed(const Int32_2 _cpos);
+	std::shared_ptr<Chunk> ClonePendingSnapshot(Int32_2 _cpos);
 
 	std::atomic<bool> ioFatal{ false };
 
