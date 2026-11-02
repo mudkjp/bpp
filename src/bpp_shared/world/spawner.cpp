@@ -75,12 +75,12 @@ EntitySpawner::EntitySpawner() {
 }
 
 // Picks one entry from the weighted list
-static std::optional<SpawnEntry> PickWeighted(Java::Random& _rand, SpawnCategory& _category, Biome _biome) {
+static const SpawnEntry* PickWeighted(Java::Random& _rand, SpawnCategory& _category, Biome _biome) {
 	int total = 0;
 	auto& spawnList = _category.GetSpawnSpawnListForBiome(_biome);
 
 	if (spawnList.size() == 0)
-		return std::nullopt;
+		return nullptr;
 
 	for (auto& entry : spawnList)
 		total += entry.weight;
@@ -89,9 +89,9 @@ static std::optional<SpawnEntry> PickWeighted(Java::Random& _rand, SpawnCategory
 	for (auto& entry : spawnList) {
 		roll -= entry.weight;
 		if (roll < 0)
-			return entry;
+			return &entry;
 	}
-	return std::nullopt;
+	return nullptr;
 }
 
 static bool IsValidSpawnBlock(WorldManager& _world, Int3 _pos, Material& _material) {
@@ -128,17 +128,22 @@ void EntitySpawner::TrySpawnEntities(WorldManager& _world, const std::vector<Cli
 	if (chunksToSpawnIn.empty())
 		return;
 
+	// Resolve each chunk's biome once per tick instead of once per category.
+	std::vector<std::pair<Int32_2, Biome>> spawnChunks;
+	spawnChunks.reserve(chunksToSpawnIn.size());
+	for (const auto& cpos : chunksToSpawnIn)
+		spawnChunks.emplace_back(cpos, _world.GetBiome({ cpos.x << 4, cpos.z << 4 }));
+
 	for (auto& category : this->categories) {
 		int mobCap = category.cap * int(chunksToSpawnIn.size()) / 256;
 
 		if (GetCategoryCount(_world, category) > mobCap)
 			continue;
 
-		for (auto& cpos : chunksToSpawnIn) {
-			auto biome = _world.GetBiome({ cpos.x << 4, cpos.z << 4 });
-			auto picked = PickWeighted(_world.rand, category, biome);
+		for (const auto& [cpos, biome] : spawnChunks) {
+			const SpawnEntry* picked = PickWeighted(_world.rand, category, biome);
 
-			if (!picked.has_value())
+			if (!picked)
 				continue;
 
 			Int3 anchorPos = { cpos.x * CHUNK_WIDTH + _world.rand.NextInt(CHUNK_WIDTH),
@@ -149,7 +154,7 @@ void EntitySpawner::TrySpawnEntities(WorldManager& _world, const std::vector<Cli
 			if (_world.IsBlockNormalCube(anchorPos) || _world.GetMaterial(anchorPos) != category.spawnMaterial)
 				continue; // Discard this chunk
 
-			const int maxCluster = picked.value().maxSpawnedInChunk;
+			const int maxCluster = picked->maxSpawnedInChunk;
 			int spawnedThisCluster = 0;
 			for (int group = 0; group < 3 && spawnedThisCluster < maxCluster; group++) {
 				Int3 pos = anchorPos;
@@ -168,7 +173,7 @@ void EntitySpawner::TrySpawnEntities(WorldManager& _world, const std::vector<Cli
 						continue;
 
 					// Reused template instance
-					auto& candidate = picked.value().entityPtrShared;
+					auto& candidate = picked->entityPtrShared;
 					candidate->world = &_world;
 					candidate->entityManager = &_world.entityManager;
 
@@ -180,7 +185,7 @@ void EntitySpawner::TrySpawnEntities(WorldManager& _world, const std::vector<Cli
 						continue;
 
 					// Once we confirm a spawn we actually make the new entity
-					std::shared_ptr<Entity> newMob = picked.value().factory();
+					std::shared_ptr<Entity> newMob = picked->factory();
 					newMob->world = &_world;
 					newMob->entityManager = &_world.entityManager;
 					newMob->Teleport(position, { rotationYaw, 0.0 });
