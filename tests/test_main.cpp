@@ -38,6 +38,7 @@
 #include "world/generator/overworld/chunk_gen.h"
 #include "world/storage/region.h"
 #include "world/storage/region_manager.h"
+#include "world/managers/redstone_manager.h"
 #include "world/world.h"
 #include "trackers/entity_tracker.h"
 
@@ -1204,6 +1205,53 @@ void TestDeferredUpdateBatch() {
 	world.SetFrozen(false);
 }
 
+void TestTorchBurnoutWindow() {
+	WorldManager world;
+	world.elapsedTicks = 1000;
+	RedstoneManager::PruneTorchUpdates(world);
+
+	const Int3 pos{ 5, 64, 5 };
+	const Int3 other{ 6, 64, 5 };
+	for (int i = 0; i < 7; ++i) {
+		CHECK(!RedstoneManager::CheckTorchBurnout(world, pos, true));
+		CHECK(!RedstoneManager::CheckTorchBurnout(world, other, true));
+	}
+
+	// Interleaved positions must keep independent counts.
+	CHECK(!RedstoneManager::CheckTorchBurnout(world, pos, false));
+	CHECK(!RedstoneManager::CheckTorchBurnout(world, other, false));
+	CHECK(RedstoneManager::CheckTorchBurnout(world, pos, true));
+	CHECK(!RedstoneManager::CheckTorchBurnout(world, other, false));
+
+	// Entries older than the 100 tick window stop counting after pruning.
+	world.elapsedTicks += 101;
+	RedstoneManager::PruneTorchUpdates(world);
+	CHECK(!RedstoneManager::CheckTorchBurnout(world, pos, false));
+	CHECK(!RedstoneManager::CheckTorchBurnout(world, other, false));
+}
+
+void TestRedstoneWireDecay() {
+	WorldManager world;
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 0, 0 };
+	chunk->state.store(ChunkState::Generated);
+	for (int x = 0; x < CHUNK_WIDTH; ++x) {
+		chunk->SetBlockRaw({ x, 63, 8 }, BLOCK_STONE);
+		chunk->SetBlockRaw({ x, 64, 8 }, BLOCK_REDSTONE);
+		chunk->SetMetaRaw({ x, 64, 8 }, 15);
+	}
+	world.chunks[Int32_2{ 0, 0 }] = chunk;
+
+	// With no power source every wire drops to zero and stays there.
+	RedstoneManager::RefreshWireAt(world, { 0, 64, 8 });
+	for (int x = 0; x < CHUNK_WIDTH; ++x)
+		CHECK_EQ(int(world.GetMetadata({ x, 64, 8 })), 0);
+
+	RedstoneManager::RefreshWireAt(world, { 0, 64, 8 });
+	for (int x = 0; x < CHUNK_WIDTH; ++x)
+		CHECK_EQ(int(world.GetMetadata({ x, 64, 8 })), 0);
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1399,6 +1447,8 @@ std::vector<TestCase> Tests() {
 		{ "block_change_dedup", TestBlockChangeDedup },
 		{ "chunk_sender_stationary_scan", TestChunkSenderStationaryScan },
 		{ "deferred_update_batch", TestDeferredUpdateBatch },
+		{ "torch_burnout_window", TestTorchBurnoutWindow },
+		{ "redstone_wire_decay", TestRedstoneWireDecay },
 		{ "pathfinder_flat", TestPathfinderFlat },
 		{ "region_fixture", TestRegionFixture },
 		{ "region_generated_round_trip", TestRegionGeneratedRoundTrip },
@@ -1661,6 +1711,44 @@ void RunBenchmarks() {
 		const size_t pending = deferredWorld.PendingDeferredUpdates();
 		deferredWorld.ProcessDeferredUpdates();
 		return pending;
+	});
+
+	WorldManager burnoutWorld;
+	Bench("redstone_torch_burnout_window", 0, [&] {
+		// Expire the previous window so each iteration starts from an empty queue.
+		burnoutWorld.elapsedTicks += 101;
+		RedstoneManager::PruneTorchUpdates(burnoutWorld);
+		size_t burned = 0;
+		for (int i = 0; i < 200; ++i) {
+			const Int3 pos{ i, 64, 0 };
+			for (int j = 0; j < 8; ++j)
+				burned += RedstoneManager::CheckTorchBurnout(burnoutWorld, pos, true) ? 1 : 0;
+		}
+		return burned;
+	});
+
+	WorldManager dustWorld;
+	auto dustChunk = std::make_shared<Chunk>();
+	dustChunk->cpos = { 0, 0 };
+	dustChunk->state.store(ChunkState::Generated);
+	for (int x = 0; x < CHUNK_WIDTH; ++x) {
+		dustChunk->SetBlockRaw({ x, 63, 8 }, BLOCK_STONE);
+		dustChunk->SetBlockRaw({ x, 64, 8 }, BLOCK_REDSTONE);
+	}
+	dustWorld.chunks[Int32_2{ 0, 0 }] = dustChunk;
+	// Resolve once so the wire line reaches a stable power state.
+	RedstoneManager::RefreshWireAt(dustWorld, { 0, 64, 8 });
+	Bench("redstone_wire_refresh_16", 0, [&] {
+		RedstoneManager::RefreshWireAt(dustWorld, { 0, 64, 8 });
+		return size_t(dustWorld.GetMetadata({ 0, 64, 8 }));
+	});
+	Bench("redstone_block_power_profile", 0, [&] {
+		auto profile = RedstoneManager::GetBlockPowerProfile(dustWorld, { 8, 63, 8 });
+		return size_t(profile.powered) + size_t(profile.hardPowered);
+	});
+	Bench("redstone_trigger_update", 0, [&] {
+		RedstoneManager::TriggerRedstoneUpdate(dustWorld, { 0, 64, 8 }, BLOCK_REDSTONE, BLOCK_REDSTONE);
+		return size_t(dustWorld.GetMetadata({ 0, 64, 8 }));
 	});
 
 	std::vector<std::unique_ptr<Entity>> massEntities;
