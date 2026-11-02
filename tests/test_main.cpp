@@ -871,6 +871,8 @@ void TestBlockLookupTables() {
 		CHECK_EQ(int(Blocks::lightOpacityTable[i]), int(Blocks::blockProperties[i].lightOpacity));
 		CHECK_EQ(int(Blocks::lightEmissionTable[i]), int(Blocks::blockProperties[i].lightEmission));
 		CHECK_EQ(int(Blocks::ticksOnLoadTable[i]), Blocks::blockProperties[i].ticksOnLoad ? 1 : 0);
+		CHECK(Blocks::onTickTable[i] == Blocks::blockBehaviors[i].onTick);
+		CHECK(Blocks::colliderTable[i] == Blocks::blockBehaviors[i].getCollider);
 	}
 }
 
@@ -898,6 +900,37 @@ void TestPopulateFrontier() {
 	world.chunks.erase(Int32_2{ 1, 1 });
 	world.RebuildPopulateFrontier();
 	CHECK_EQ(world.PopulateFrontierCount(), size_t(2));
+}
+
+void TestTrackerUpdateOperations() {
+	EntityTracker tracker;
+	MobileEntity entity;
+	TrackedEntry entry;
+	entry.entity = &entity;
+	entry.isMobile = true;
+	entry.profile.updateFrequency = 1000;
+
+	tracker.Update(entry);
+	CHECK_EQ(tracker.equipmentUpdateCalls, size_t(1));
+	CHECK_EQ(tracker.metadataUpdateCalls, size_t(0));
+	CHECK_EQ(tracker.eventFlushCalls, size_t(0));
+
+	for (int i = 0; i < 100; ++i)
+		tracker.Update(entry);
+	CHECK_EQ(tracker.equipmentUpdateCalls, size_t(1));
+
+	entity.SetHeldItem(ItemStack{ 1, 1, 0 });
+	tracker.Update(entry);
+	CHECK_EQ(tracker.equipmentUpdateCalls, size_t(2));
+	tracker.Update(entry);
+	CHECK_EQ(tracker.equipmentUpdateCalls, size_t(2));
+
+	entity.wasMetadataUpdated = true;
+	tracker.Update(entry);
+	CHECK_EQ(tracker.metadataUpdateCalls, size_t(1));
+	CHECK(!entity.wasMetadataUpdated);
+	tracker.Update(entry);
+	CHECK_EQ(tracker.metadataUpdateCalls, size_t(1));
 }
 
 void TestConfigFixture() {
@@ -1036,6 +1069,7 @@ std::vector<TestCase> Tests() {
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "entity_index", TestEntityIndex },
 		{ "equipment_dirty_gating", TestEquipmentDirtyGating },
+		{ "tracker_update_operations", TestTrackerUpdateOperations },
 		{ "block_lookup_tables", TestBlockLookupTables },
 		{ "subregion_dedup", TestSubRegionDedup },
 		{ "pathfinder_flat", TestPathfinderFlat },
