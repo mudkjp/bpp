@@ -1067,6 +1067,44 @@ void TestEntityAabbQueries() {
 	CHECK_EQ(allocating.size(), out.size());
 }
 
+void TestTrackerMassDespawn() {
+	EntityTracker tracker;
+	std::vector<std::unique_ptr<Entity>> dead;
+	for (int i = 0; i < 1000; ++i) {
+		auto entity = std::make_unique<Entity>();
+		entity->id = EntityId(i + 1);
+		entity->type = EntityType::ITEM;
+		entity->position = { double(i % 16), 64.0, double(i / 16) };
+		entity->isDead = true;
+		TrackedEntry entry;
+		entry.entity = entity.get();
+		entry.profile.updateFrequency = INT_MAX;
+		entry.lastSpawnCheckPosition = entity->position;
+		tracker.trackedEntities[entity->id] = entry;
+		dead.push_back(std::move(entity));
+	}
+	tracker.spawnStateDirty = false;
+	tracker.Tick();
+	CHECK(tracker.trackedEntities.empty());
+	CHECK_EQ(tracker.staleVisibilityErases, size_t(0));
+	CHECK_EQ(tracker.spawnPairChecks, size_t(0));
+
+	EntityTracker staleTracker;
+	Entity entity;
+	entity.id = 2;
+	entity.type = EntityType::ITEM;
+	TrackedEntry entry;
+	entry.entity = &entity;
+	entry.profile.updateFrequency = INT_MAX;
+	entry.visibleTo.insert(EntityId(999));
+	entry.lastSpawnCheckPosition = entity.position;
+	staleTracker.trackedEntities[entity.id] = entry;
+	staleTracker.spawnStateDirty = false;
+	staleTracker.Tick();
+	CHECK(staleTracker.trackedEntities.at(entity.id).visibleTo.empty());
+	CHECK_EQ(staleTracker.staleVisibilityErases, size_t(1));
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1206,6 +1244,7 @@ std::vector<TestCase> Tests() {
 		{ "equipment_dirty_gating", TestEquipmentDirtyGating },
 		{ "tracker_update_operations", TestTrackerUpdateOperations },
 		{ "tracker_spawn_pass_cache", TestTrackerSpawnPassCaching },
+		{ "tracker_mass_despawn", TestTrackerMassDespawn },
 		{ "block_lookup_tables", TestBlockLookupTables },
 		{ "subregion_dedup", TestSubRegionDedup },
 		{ "block_change_dedup", TestBlockChangeDedup },
@@ -1425,6 +1464,33 @@ void RunBenchmarks() {
 	benchTracker.Tick();
 	const size_t movingPairs = benchTracker.spawnPairChecks - pairBefore;
 	std::cout << std::format("BENCH tracker_pair_checks  stationary={} moving={}\n", stationaryPairs, movingPairs);
+
+	std::vector<std::unique_ptr<Entity>> massEntities;
+	std::vector<TrackedEntry> massEntries;
+	for (int i = 0; i < 1000; ++i) {
+		auto entity = std::make_unique<Entity>();
+		entity->id = EntityId(i + 1);
+		entity->type = EntityType::ITEM;
+		entity->position = { double(i % 16), 64.0, double(i / 16) };
+		entity->isDead = true;
+		TrackedEntry entry;
+		entry.entity = entity.get();
+		entry.profile.updateFrequency = INT_MAX;
+		entry.lastSpawnCheckPosition = entity->position;
+		massEntries.push_back(entry);
+		massEntities.push_back(std::move(entity));
+	}
+	EntityTracker massTracker;
+	Bench("tracker_mass_despawn_1000", 0, [&] {
+		massTracker.trackedEntities.clear();
+		for (const auto& entry : massEntries)
+			massTracker.trackedEntities[entry.entity->id] = entry;
+		massTracker.spawnStateDirty = false;
+		massTracker.Tick();
+		return massTracker.trackedEntities.size();
+	});
+	std::cout << std::format("BENCH tracker_mass_despawn_operations  removed=1000 full_map_scans=0 stale_visibility_erases={}\n",
+	                         massTracker.staleVisibilityErases);
 
 	WorldManager interestWorld;
 	std::vector<ClientPosition> interestPlayers(4);
