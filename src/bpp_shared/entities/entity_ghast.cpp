@@ -122,12 +122,10 @@ void GhastEntity::ShootFireball(double _dx, double _dy, double _dz) {
 }
 
 void GhastEntity::TickPhysics() {
-	// TODO: Don't we already get this via the base "inLava"?
-	bool currentlyInLava = world->IsMaterialInAabb(GetLavaCollider(), Material::Lava());
 	if (inWater) {
 		Move(this->velocity);
 		velocity *= 0.8;
-	} else if (currentlyInLava) {
+	} else if (inLava) {
 		Move(this->velocity);
 		velocity *= 0.5;
 	} else {

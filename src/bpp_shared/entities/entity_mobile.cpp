@@ -87,9 +87,9 @@ void MobileEntity::SetGoal(std::optional<Int3> _goal) {
 bool MobileEntity::FollowPath() {
 	jumping = false;
 
-	// Mobs bob/hop while in water or lava
-	bool isCurrentlyInLava = world->IsMaterialInAabb(GetLavaCollider(), Material::Lava());
-	if ((inWater || isCurrentlyInLava) && rand.NextFloat() < 0.8f) {
+	// Mobs bob/hop while in water or lava. inLava was computed by
+	// Entity::Tick -> UpdateEntityPhysicsState earlier this tick.
+	if ((inWater || inLava) && rand.NextFloat() < 0.8f) {
 		jumping = true;
 	}
 
@@ -186,8 +186,7 @@ void MobileEntity::ResolveEntityCollision(Entity& _other) {
 }
 
 void MobileEntity::TickPhysics() {
-	bool currentlyInLava = world->IsMaterialInAabb(GetLavaCollider(), Material::Lava());
-	if (inWater || currentlyInLava) {
+	if (inWater || inLava) {
 		// Water and lava movement
 		auto oldY = position.y;
 		double friction = inWater ? double(0.8) : double(0.5);
@@ -473,10 +472,8 @@ void MobileEntity::Tick() {
 	}
 
 	// Jump code
-	// Vanilla does this check here again with the current collider
-	bool isCurrentlyInLava = world->IsMaterialInAabb(GetLavaCollider(), Material::Lava());
 	if (jumping) {
-		if (inWater || isCurrentlyInLava) {
+		if (inWater || inLava) {
 			velocity.y += double(0.04);
 		} else if (onGround) {
 			velocity.y = double(0.42);
