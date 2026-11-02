@@ -16,9 +16,11 @@
 
 #include "blocks/block_properties_behaviors.h"
 #include "chunk.h"
+#include "chunk_sender.h"
 #include "chunk_serializer.h"
 #include "config/config.h"
 #include "crafting/recipe_manager.h"
+#include "entities/entity_mobile.h"
 #include "helpers/deflate_pool.h"
 #include "helpers/endian_convert.h"
 #include "helpers/packed_array.h"
@@ -27,12 +29,15 @@
 #include "networking/network_stream.h"
 #include "numeric_structs.h"
 #include "pathfinding/pathfinder.h"
+#include "player_conn/player_session.h"
+#include "runtime.h"
 #include "strings/ucs2.h"
 #include "subchunk.h"
 #include "world/generator/overworld/chunk_gen.h"
 #include "world/storage/region.h"
 #include "world/storage/region_manager.h"
 #include "world/world.h"
+#include "trackers/entity_tracker.h"
 
 #include <algorithm>
 #include <array>
@@ -751,6 +756,52 @@ void TestChunkInterestCache() {
 	CHECK(!world.chunks.contains(Int32_2{ -1, 0 }));
 }
 
+void TestEquipmentDirtyGating() {
+	MobileEntity entity;
+	TrackedEntry entry;
+	entry.entity = &entity;
+	entry.isMobile = true;
+
+	// First observation must send the initial equipment state.
+	CHECK(EntityTracker::ShouldUpdateEquipment(entry, entity));
+	CHECK(entry.lastEquipmentRevision == entity.equipmentRevision);
+
+	// Unchanged equipment must not trigger another update.
+	for (int i = 0; i < 100; ++i)
+		CHECK(!EntityTracker::ShouldUpdateEquipment(entry, entity));
+
+	// Changing the held item must dirty the entry exactly once.
+	entity.SetHeldItem(ItemStack{ 1, 1, 0 });
+	CHECK(EntityTracker::ShouldUpdateEquipment(entry, entity));
+	CHECK(!EntityTracker::ShouldUpdateEquipment(entry, entity));
+}
+
+void TestSubRegionDedup() {
+	Runtime runtime;
+	std::vector<std::unique_ptr<PlayerSession>> sessions;
+	for (int i = 0; i < 4; ++i)
+		sessions.push_back(std::make_unique<PlayerSession>(-1, runtime));
+
+	ChunkSender sender;
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 0, 0 };
+	chunk->state.store(ChunkState::Generated);
+	std::vector<PendingBlock> changes;
+	for (int i = 0; i < 10; ++i)
+		changes.push_back(PendingBlock{ .block = { BLOCK_STONE, 0 }, .blockPos = { i, 64, 0 } });
+
+	sender.BeginTick();
+	for (const auto& session : sessions) {
+		sender.inFlight[session.get()] = {};
+		sender.SendBlockUpdates(*session, Int32_2{ 0, 0 }, changes, chunk);
+	}
+	CHECK_EQ(sender.tickSubRegions.size(), size_t(1));
+	sender.pool.wait();
+	for (const auto& session : sessions)
+		sender.Flush(*session);
+	CHECK_EQ(sender.tickSubRegions.size(), size_t(1));
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -883,6 +934,8 @@ std::vector<TestCase> Tests() {
 		{ "chunk_light_emitters", TestChunkLightEmitters },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "entity_index", TestEntityIndex },
+		{ "equipment_dirty_gating", TestEquipmentDirtyGating },
+		{ "subregion_dedup", TestSubRegionDedup },
 		{ "region_fixture", TestRegionFixture },
 		{ "region_generated_round_trip", TestRegionGeneratedRoundTrip },
 		{ "region_overwrite_reuses_sectors", TestRegionOverwriteReusesSectors },
@@ -1018,6 +1071,60 @@ void RunBenchmarks() {
 	Bench("pathfinder_flat", 0, [&] {
 		auto path = pathfinder.FindPath({ 2, 4, 2 }, { 13, 4, 13 }, 0.6f, 1.8f, 20.0f);
 		return path.size();
+	});
+
+	WorldManager interestWorld;
+	std::vector<ClientPosition> interestPlayers(4);
+	for (size_t i = 0; i < interestPlayers.size(); ++i) {
+		interestPlayers[i].pos = { double(i * 32), 64.0, double(i * 32) };
+		interestPlayers[i].viewDistanceOverride = 4;
+	}
+	interestWorld.UpdateLoadRadius(interestPlayers);
+	Bench("chunk_interest_cached", 0, [&] {
+		interestWorld.UpdateLoadRadius(interestPlayers);
+		return interestWorld.chunks.size();
+	});
+	Bench("chunk_interest_rebuild", 0, [&] {
+		interestWorld.InvalidateChunkInterest();
+		interestWorld.UpdateLoadRadius(interestPlayers);
+		return interestWorld.chunks.size();
+	});
+
+	Runtime benchRuntime;
+	std::vector<std::unique_ptr<PlayerSession>> benchSessions;
+	for (int i = 0; i < 8; ++i)
+		benchSessions.push_back(std::make_unique<PlayerSession>(-1, benchRuntime));
+	ChunkSender benchSender;
+	auto benchChunk = std::make_shared<Chunk>();
+	benchChunk->cpos = { 0, 0 };
+	benchChunk->state.store(ChunkState::Generated);
+	std::vector<PendingBlock> benchChanges;
+	for (int i = 0; i < 10; ++i)
+		benchChanges.push_back(PendingBlock{ .block = { BLOCK_STONE, 0 }, .blockPos = { i, 64, 0 } });
+
+	Bench("subregion_fanout_shared", 0, [&] {
+		benchSender.BeginTick();
+		benchSender.subRegionFlight.clear();
+		benchSender.inFlight.clear();
+		for (const auto& session : benchSessions) {
+			benchSender.inFlight[session.get()] = {};
+			benchSender.SendBlockUpdates(*session, Int32_2{ 0, 0 }, benchChanges, benchChunk);
+		}
+		benchSender.pool.wait();
+		return benchSender.tickSubRegions.size();
+	});
+	Bench("subregion_fanout_unshared", 0, [&] {
+		size_t jobs = 0;
+		for (const auto& session : benchSessions) {
+			benchSender.BeginTick();
+			benchSender.subRegionFlight.clear();
+			benchSender.inFlight.clear();
+			benchSender.inFlight[session.get()] = {};
+			benchSender.SendBlockUpdates(*session, Int32_2{ 0, 0 }, benchChanges, benchChunk);
+			benchSender.pool.wait();
+			jobs += benchSender.tickSubRegions.size();
+		}
+		return jobs;
 	});
 
 	TempDir temp("region-bench");
