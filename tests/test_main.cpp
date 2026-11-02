@@ -33,6 +33,7 @@
 #include "inventory/interactions/furnace.h"
 #include "inventory/interactions/large_chest.h"
 #include "inventory/item_stack.h"
+#include "items/item_map.h"
 #include "helpers/endian_convert.h"
 #include "helpers/packed_array.h"
 #include "java_math.h"
@@ -2211,6 +2212,79 @@ void TestRegionWriteOrdering() {
 	CHECK_EQ(blockAt(), int(BLOCK_GLASS));
 }
 
+void TestMapColumnData() {
+	WorldManager world;
+	auto chunkFor = [&](int _cz, int _top) {
+		auto chunk = std::make_shared<Chunk>();
+		chunk->cpos = { 0, _cz };
+		chunk->state.store(ChunkState::Generated);
+		chunk->FillSlices(0, _top, BLOCK_STONE);
+		// Add a few surface blocks so slope brightness varies.
+		chunk->SetBlockRaw({ 4, _top + 1, 2 }, BLOCK_GRASS);
+		chunk->SetBlockRaw({ 9, _top + 1, 7 }, BLOCK_SAND);
+		chunk->GenerateHeightMap();
+		world.chunks[Int32_2{ 0, _cz }] = chunk;
+		return chunk;
+	};
+	for (int cz = -1; cz <= 7; ++cz)
+		chunkFor(cz, 60 + cz * 2);
+
+	const int x = 12;
+	auto expected = [&] {
+		std::vector<uint8_t> data;
+		Map::InitGraphics(data, Byte2{ static_cast<int8_t>(x), 0 });
+		for (int z = 0; z < Map::Item::MAP_ITEM_WIDTH; ++z) {
+			const int northY = world.GetHeightValue(x, z - 1);
+			const int y = world.GetHeightValue(x, z);
+			const BlockType block = world.GetBlockId({ x, y - 1, z });
+			int8_t brightness = 1;
+			if (northY > y)
+				brightness--;
+			if (northY < y)
+				brightness++;
+			Map::AppendPixel(data, uint8_t((Blocks::blockProperties[block].material.mapColor.index << 2) | brightness));
+		}
+		return data;
+	}();
+
+	std::vector<uint8_t> actual;
+	Map::BuildColumnData(actual, world, x);
+	CHECK(actual == expected);
+	CHECK_EQ(actual.size(), expected.size());
+
+	// Marker payload must match the old vector-based helper byte for byte.
+	const auto marker = Map::MakeMarker(Map::Icon::RedArrow, 123.0f, Byte2{ -5, 9 });
+	std::vector<uint8_t> oldMarker;
+	Map::PlaceMarkers(oldMarker, std::vector<Map::MarkerPlacement>{ marker });
+	std::vector<uint8_t> newMarker;
+	Map::BuildMarkerData(newMarker, marker);
+	CHECK(newMarker == oldMarker);
+	CHECK_EQ(int(newMarker[0]), int(PacketData::MapDataType::ICON));
+
+	// Missing chunks still read as air at height zero, matching the old path.
+	WorldManager emptyWorld;
+	std::vector<uint8_t> emptyExpected;
+	Map::InitGraphics(emptyExpected, Byte2{ static_cast<int8_t>(x), 0 });
+	for (int z = 0; z < Map::Item::MAP_ITEM_WIDTH; ++z)
+		Map::AppendPixel(emptyExpected, uint8_t((Blocks::blockProperties[BLOCK_AIR].material.mapColor.index << 2) | 1));
+	std::vector<uint8_t> emptyActual;
+	Map::BuildColumnData(emptyActual, emptyWorld, x);
+	CHECK(emptyActual == emptyExpected);
+}
+
+void TestRecipeEmptyGrid() {
+	RecipeManager recipes;
+	recipes.AddShapedRecipe({ "A" }, { { 'A', { ItemId(1), 0 } } }, ItemStack{ ItemId(3), 1, 0 });
+	std::array<ItemStack, 9> empty{};
+	auto none = recipes.MatchGrid(empty, { 3, 3 });
+	CHECK_EQ(none.second.id, ItemId(Items::Id::INVALID));
+
+	std::array<ItemStack, 9> grid{};
+	grid[0] = ItemStack{ ItemId(1), 1, 0 };
+	auto hit = recipes.MatchGrid(grid, { 3, 3 });
+	CHECK_EQ(hit.second.id, ItemId(3));
+}
+
 void TestLightPropagationEarlyOut() {
 	WorldManager world;
 	auto chunk = std::make_shared<Chunk>();
@@ -2674,6 +2748,8 @@ std::vector<TestCase> Tests() {
 		{ "dirty_chunk_index", TestDirtyChunkIndex },
 		{ "save_chunk_budget", TestSaveChunkBudget },
 		{ "region_write_ordering", TestRegionWriteOrdering },
+		{ "map_column_data", TestMapColumnData },
+		{ "recipe_empty_grid", TestRecipeEmptyGrid },
 		{ "container_mirror_sync", TestContainerMirrorSync },
 		{ "player_save_queue", TestPlayerSaveQueue },
 		{ "command_parsing", TestCommandParsing },
@@ -2923,6 +2999,65 @@ void RunBenchmarks() {
 		return lightQueueWorld.lightManager.PendingLightUpdates();
 	});
 
+	WorldManager mapBenchWorld;
+	for (int cz = -1; cz <= 7; ++cz) {
+		auto chunk = std::make_shared<Chunk>();
+		chunk->cpos = { 0, cz };
+		chunk->state.store(ChunkState::Generated);
+		chunk->FillSlices(0, 60 + cz * 2, BLOCK_STONE);
+		chunk->SetBlockRaw({ 4, 61 + cz * 2, 2 }, BLOCK_GRASS);
+		chunk->GenerateHeightMap();
+		mapBenchWorld.chunks[Int32_2{ 0, cz }] = std::move(chunk);
+	}
+	constexpr int mapBenchX = 12;
+	Bench("map_column_old_loop", 131, [&] {
+		std::vector<uint8_t> data;
+		Map::InitGraphics(data, Byte2{ static_cast<int8_t>(mapBenchX), 0 });
+		for (int z = 0; z < Map::Item::MAP_ITEM_WIDTH; ++z) {
+			const int northY = mapBenchWorld.GetHeightValue(mapBenchX, z - 1);
+			const int y = mapBenchWorld.GetHeightValue(mapBenchX, z);
+			const BlockType block = mapBenchWorld.GetBlockId({ mapBenchX, y - 1, z });
+			int8_t brightness = 1;
+			if (northY > y)
+				brightness--;
+			if (northY < y)
+				brightness++;
+			Map::AppendPixel(
+			    data, uint8_t((Blocks::blockProperties[block].material.mapColor.index << 2) | brightness));
+		}
+		return data.size();
+	});
+	std::vector<uint8_t> mapBenchData;
+	mapBenchData.reserve(160);
+	Bench("map_column_cached_chunks", 131, [&] {
+		Map::BuildColumnData(mapBenchData, mapBenchWorld, mapBenchX);
+		return mapBenchData.size();
+	});
+
+	NetworkStream mapIconStream(-1);
+	const auto mapIconMarker = Map::MakeMarker(Map::Icon::WhiteArrow, 45.0f, Byte2{ 12, -7 });
+	Bench("map_icon_old_payload", 0, [&] {
+		mapIconStream.ClearWriteBuffer();
+		std::vector<Map::MarkerPlacement> markers = { mapIconMarker };
+		std::vector<uint8_t> icons;
+		Map::PlaceMarkers(icons, markers);
+		Packet::ItemData pkt;
+		pkt.itemId = Items::MAP;
+		pkt.mapId = 0;
+		pkt.data = icons;
+		pkt.Serialize(mapIconStream);
+		return mapIconStream.GetRawWriteBuffer().size();
+	});
+	Packet::ItemData mapIconPacket;
+	Bench("map_icon_reused_packet", 0, [&] {
+		mapIconStream.ClearWriteBuffer();
+		mapIconPacket.itemId = Items::MAP;
+		mapIconPacket.mapId = 0;
+		Map::BuildMarkerData(mapIconPacket.data, mapIconMarker);
+		mapIconPacket.Serialize(mapIconStream);
+		return mapIconStream.GetRawWriteBuffer().size();
+	});
+
 	WorldManager lightBorderWorld;
 	for (int dx = -1; dx <= 1; ++dx) {
 		for (int dz = -1; dz <= 1; ++dz) {
@@ -3021,6 +3156,30 @@ void RunBenchmarks() {
 			SendChat(feedbackSession, line);
 		return feedbackSession.stream.GetRawWriteBuffer().size();
 	});
+
+	RecipeManager recipeBench;
+	recipeBench.AddShapedRecipe({ "A" }, { { 'A', { ItemId(1), 0 } } }, ItemStack{ ItemId(3), 1, 0 });
+	recipeBench.AddShapedRecipe({ "AB", "CD" },
+	                            { { 'A', { ItemId(1), 0 } },
+	                              { 'B', { ItemId(2), 0 } },
+	                              { 'C', { ItemId(4), 0 } },
+	                              { 'D', { ItemId(5), 0 } } },
+	                            ItemStack{ ItemId(6), 1, 0 });
+	std::array<ItemStack, 9> recipe1{};
+	recipe1[0] = ItemStack{ ItemId(1), 1, 0 };
+	std::array<ItemStack, 9> recipe4{};
+	recipe4[0] = ItemStack{ ItemId(1), 1, 0 };
+	recipe4[1] = ItemStack{ ItemId(2), 1, 0 };
+	recipe4[3] = ItemStack{ ItemId(4), 1, 0 };
+	recipe4[4] = ItemStack{ ItemId(5), 1, 0 };
+	std::array<ItemStack, 9> recipeMiss{};
+	recipeMiss[0] = ItemStack{ ItemId(9), 1, 0 };
+	std::array<ItemStack, 9> recipeEmpty{};
+	auto recipeHit = [](const auto& _matched) { return _matched.second.id == Items::Id::INVALID ? size_t(0) : size_t(1); };
+	Bench("recipe_match_shaped_1x1", 0, [&] { return recipeHit(recipeBench.MatchGrid(recipe1, { 1, 1 })); });
+	Bench("recipe_match_shaped_2x2", 0, [&] { return recipeHit(recipeBench.MatchGrid(recipe4, { 3, 3 })); });
+	Bench("recipe_match_miss", 0, [&] { return recipeHit(recipeBench.MatchGrid(recipeMiss, { 3, 3 })); });
+	Bench("recipe_match_empty", 0, [&] { return recipeHit(recipeBench.MatchGrid(recipeEmpty, { 3, 3 })); });
 
 	strategos::BrigadierContext lookupTree;
 	auto lookupNoop = [](const strategos::CmdNode&, void*) -> std::string { return {}; };
