@@ -67,7 +67,7 @@ inline std::vector<uint8_t> Serialize(const Chunk& _chunk, int _xmin = 0, int _x
 					const SubChunk::NibbleLayer* blockLightLayer = sub.blockLight.get();
 					const SubChunk::NibbleLayer* skyLightLayer = sub.skyLight.get();
 
-					int i = sy0 + (z * CHUNK_HEIGHT) + (x * CHUNK_HEIGHT * CHUNK_WIDTH);
+					int i = (x - _xmin) * (sizeY * sizeZ) + (z - _zmin) * sizeY + (sy0 - _ymin);
 					int li = SubChunk::LocalIndex({ x, sy0, z });
 
 					if (blockLayer && metaLayer && blockLightLayer && skyLightLayer) {

@@ -418,6 +418,14 @@ void TestChunkSerializerFixture() {
 	auto decompressedSub = Deflate::Decompress(Deflate::Format::Zlib, compressedSub, expectedSub.size());
 	CHECK(decompressedSub.has_value());
 	CHECK(decompressedSub && *decompressedSub == expectedSub);
+
+	// Same region with an even y range, which takes the optimized subchunk
+	// path used by production block updates.
+	const auto expectedEven = ReadBytes("chunk/subregion_even.raw");
+	auto compressedEven = ChunkSerializer::Serialize(chunk, 3, 10, 18, 24, 5, 12);
+	auto decompressedEven = Deflate::Decompress(Deflate::Format::Zlib, compressedEven, expectedEven.size());
+	CHECK(decompressedEven.has_value());
+	CHECK(decompressedEven && *decompressedEven == expectedEven);
 }
 
 void TestRegionFixture() {
@@ -1007,7 +1015,7 @@ void RunBenchmarks() {
 	pathChunk->FillSlices(0, 3, BLOCK_STONE);
 	pathWorld.chunks[Int32_2{ 0, 0 }] = pathChunk;
 	Pathfinder pathfinder(&pathWorld);
-	Bench("pathfinder_flat", 16 * 16, [&] {
+	Bench("pathfinder_flat", 0, [&] {
 		auto path = pathfinder.FindPath({ 2, 4, 2 }, { 13, 4, 13 }, 0.6f, 1.8f, 20.0f);
 		return path.size();
 	});
