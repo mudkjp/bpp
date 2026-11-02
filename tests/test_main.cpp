@@ -933,6 +933,32 @@ void TestTrackerUpdateOperations() {
 	CHECK_EQ(tracker.metadataUpdateCalls, size_t(1));
 }
 
+void TestChunkSenderStationaryScan() {
+	Runtime runtime;
+	PlayerSession session(-1, runtime);
+	session.position.viewDistanceOverride = 1;
+	WorldManager world;
+	ChunkSender sender;
+
+	const size_t before = sender.radiusLookups;
+	sender.Enqueue(session, world, 100);
+	CHECK_EQ(sender.radiusLookups - before, size_t(9));
+
+	const size_t afterFirst = sender.radiusLookups;
+	for (int i = 0; i < 10; ++i)
+		sender.Enqueue(session, world, 100);
+	CHECK_EQ(sender.radiusLookups, afterFirst);
+
+	// A retry entry that becomes generated must still be sent without a full scan.
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 0, 0 };
+	chunk->state.store(ChunkState::Generated);
+	world.chunks[Int32_2{ 0, 0 }] = chunk;
+	sender.Enqueue(session, world, 100);
+	CHECK(session.sentChunks.contains(Int32_2{ 0, 0 }));
+	CHECK_EQ(sender.radiusLookups, afterFirst);
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1072,6 +1098,7 @@ std::vector<TestCase> Tests() {
 		{ "tracker_update_operations", TestTrackerUpdateOperations },
 		{ "block_lookup_tables", TestBlockLookupTables },
 		{ "subregion_dedup", TestSubRegionDedup },
+		{ "chunk_sender_stationary_scan", TestChunkSenderStationaryScan },
 		{ "pathfinder_flat", TestPathfinderFlat },
 		{ "region_fixture", TestRegionFixture },
 		{ "region_generated_round_trip", TestRegionGeneratedRoundTrip },
@@ -1309,6 +1336,47 @@ void RunBenchmarks() {
 		}
 		return jobs;
 	});
+
+	WorldManager scanWorld;
+	for (int x = -10; x <= 10; ++x) {
+		for (int z = -10; z <= 10; ++z) {
+			auto chunk = std::make_shared<Chunk>();
+			chunk->cpos = { x, z };
+			chunk->state.store(ChunkState::Generated);
+			scanWorld.chunks[Int32_2{ x, z }] = std::move(chunk);
+		}
+	}
+	PlayerSession scanSession(-1, benchRuntime);
+	scanSession.position.viewDistanceOverride = 10;
+	for (int x = -10; x <= 10; ++x)
+		for (int z = -10; z <= 10; ++z)
+			scanSession.sentChunks.insert(Int32_2{ x, z });
+	ChunkSender scanSender;
+	scanSender.Enqueue(scanSession, scanWorld, 1000);
+	Bench("chunk_sender_stationary_scan", 0, [&] {
+		const size_t before = scanSender.radiusLookups;
+		scanSender.Enqueue(scanSession, scanWorld, 1000);
+		return scanSender.radiusLookups - before;
+	});
+	int scanMove = 0;
+	Bench("chunk_sender_moving_scan", 0, [&] {
+		scanSession.position.pos.x = (scanMove++ & 1) ? 16.0 : 0.0;
+		const size_t before = scanSender.radiusLookups;
+		scanSender.Enqueue(scanSession, scanWorld, 1000);
+		return scanSender.radiusLookups - before;
+	});
+
+	scanSession.position.pos.x = 0.0;
+	scanSender.Enqueue(scanSession, scanWorld, 1000);
+	size_t lookupBefore = scanSender.radiusLookups;
+	scanSender.Enqueue(scanSession, scanWorld, 1000);
+	const size_t cachedLookups = scanSender.radiusLookups - lookupBefore;
+	scanSession.position.pos.x = 16.0;
+	lookupBefore = scanSender.radiusLookups;
+	scanSender.Enqueue(scanSession, scanWorld, 1000);
+	const size_t movingLookups = scanSender.radiusLookups - lookupBefore;
+	std::cout << std::format("BENCH chunk_sender_radius_lookups  cached={} moving={}\n", cachedLookups,
+	                         movingLookups);
 
 	TempDir temp("region-bench");
 	std::filesystem::copy_file(Fixture("region/r.0.0.mcr"), temp.path / "r.0.0.mcr");
