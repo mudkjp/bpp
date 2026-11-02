@@ -30,6 +30,8 @@ struct PlayerEntity;
 struct EntityManager {
 	EntityId* nextEntityId = nullptr; // Vanilla seems to reserve 0 and 1
 	std::vector<std::shared_ptr<Entity>> entities;
+	// Fast ID lookup; kept in sync by AddEntity/DetachEntity.
+	std::unordered_map<EntityId, std::shared_ptr<Entity>> entitiesById;
 	std::vector<std::weak_ptr<Entity>> players;
 	std::unordered_map<Int2, EntityContainer> entityContainers;
 	WorldManager* world = nullptr; // we need to bind a pointer to this later
@@ -122,11 +124,8 @@ public:
 	}
 
 	std::shared_ptr<Entity> GetEntityByIdShared(EntityId _id) {
-		for (auto& entity : entities) {
-			if (entity->id == _id)
-				return entity;
-		}
-		return nullptr;
+		auto it = entitiesById.find(_id);
+		return it == entitiesById.end() ? nullptr : it->second;
 	}
 
 	EntityId GetNextEntityId() {

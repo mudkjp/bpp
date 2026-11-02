@@ -118,6 +118,7 @@ void EntityManager::DetachEntity(const std::shared_ptr<Entity>& entity) {
 
 	// Unbind ourselves
 	entity->entityManager = nullptr;
+	entitiesById.erase(entity->id);
 
 	// Mark the chunk we died in as dirty
 	if (auto chunk = world->GetChunkRaw({ entity->bucketPos.x, entity->bucketPos.y }))
@@ -159,6 +160,7 @@ void EntityManager::AddEntity(std::shared_ptr<Entity> _entity, EntityId _forceEn
 	}
 
 	entities.push_back(std::move(_entity));
+	entitiesById[entities.back()->id] = entities.back();
 	if (onEntitySpawn)
 		onEntitySpawn(entities.back());
 }
