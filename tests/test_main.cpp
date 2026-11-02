@@ -1954,6 +1954,84 @@ void TestSeedLightingHeightGrid() {
 	tallWorld.lightManager.ProcessLightQueue(tallWorld, INT_MAX);
 }
 
+void TestLightQueueBudget() {
+	WorldManager world;
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 0, 0 };
+	chunk->state.store(ChunkState::Generated);
+	chunk->FillSlices(0, 63, BLOCK_STONE);
+	chunk->GenerateSkylightMap();
+	world.chunks[Int32_2{ 0, 0 }] = chunk;
+
+	// 512 independent columns, 128 voxels of work each.
+	for (int x = 0; x < 32; ++x) {
+		for (int z = 0; z < 16; ++z)
+			world.lightManager.ScheduleLightRegion({ x, 0, z }, { x, CHUNK_HEIGHT - 1, z }, LightType::Sky);
+	}
+	const size_t total = world.lightManager.PendingLightUpdates();
+	CHECK_EQ(total, size_t(512));
+
+	world.lightManager.ProcessLightQueue(world, 256);
+	const size_t afterOneTick = world.lightManager.PendingLightUpdates();
+	CHECK(afterOneTick < total);
+	CHECK(total - afterOneTick <= size_t(2));
+
+	size_t calls = 0;
+	while (world.lightManager.PendingLightUpdates() > 0 && calls < 1000) {
+		world.lightManager.ProcessLightQueue(world, 256);
+		++calls;
+	}
+	CHECK_EQ(world.lightManager.PendingLightUpdates(), size_t(0));
+	CHECK(calls <= 256);
+}
+
+void TestLightQueueBudgetConvergence() {
+	auto build = [](WorldManager& _world) {
+		for (int dx = -1; dx <= 1; ++dx) {
+			for (int dz = -1; dz <= 1; ++dz) {
+				auto chunk = std::make_shared<Chunk>();
+				chunk->cpos = { dx, dz };
+				chunk->state.store(ChunkState::Generated);
+				chunk->FillSlices(0, 63, BLOCK_STONE);
+				chunk->GenerateSkylightMap();
+				_world.chunks[Int32_2{ dx, dz }] = std::move(chunk);
+			}
+		}
+		auto& center = _world.chunks[Int32_2{ 0, 0 }];
+		center->SetBlockRaw({ 8, 64, 8 }, BLOCK_GLOWSTONE);
+		_world.lightManager.ScheduleLightUpdate({ 8, 64, 8 }, LightType::Block);
+	};
+
+	auto hashLight = [](WorldManager& _world) {
+		size_t hash = 1469598103934665603ULL;
+		for (auto& [pos, chunk] : _world.chunks) {
+			for (int x = 0; x < CHUNK_WIDTH; ++x) {
+				for (int z = 0; z < CHUNK_WIDTH; ++z) {
+					for (int y = 0; y < CHUNK_HEIGHT; ++y) {
+						hash = (hash ^ size_t(chunk->GetBlockLight({ x, y, z }))) * 1099511628211ULL;
+						hash = (hash ^ size_t(chunk->GetSkyLight({ x, y, z }))) * 1099511628211ULL;
+					}
+				}
+			}
+		}
+		return hash;
+	};
+
+	WorldManager reference;
+	build(reference);
+	reference.lightManager.ProcessLightQueue(reference, INT_MAX);
+
+	WorldManager budgeted;
+	build(budgeted);
+	size_t calls = 0;
+	while (budgeted.lightManager.PendingLightUpdates() > 0 && calls < 100000) {
+		budgeted.lightManager.ProcessLightQueue(budgeted, 64);
+		++calls;
+	}
+	CHECK_EQ(budgeted.lightManager.PendingLightUpdates(), size_t(0));
+	CHECK_EQ(hashLight(reference), hashLight(budgeted));
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -2172,6 +2250,8 @@ std::vector<TestCase> Tests() {
 		{ "light_edit_column", TestLightEditColumn },
 		{ "light_border_uniform", TestLightBorderUniformSlices },
 		{ "seed_lighting_height_grid", TestSeedLightingHeightGrid },
+		{ "light_queue_budget", TestLightQueueBudget },
+		{ "light_queue_budget_convergence", TestLightQueueBudgetConvergence },
 		{ "command_literal_index", TestCommandLiteralIndex },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "collision_shape_storage", TestCollisionShapeStorage },
@@ -2324,6 +2404,31 @@ void RunBenchmarks() {
 	Bench("chunk_skylight_map", CHUNK_VOLUME, [&] {
 		skylit.GenerateSkylightMap();
 		return size_t(skylit.GetSkyLight({ 8, 64, 8 }));
+	});
+
+	WorldManager lightQueueWorld;
+	for (int dx = -1; dx <= 1; ++dx) {
+		for (int dz = -1; dz <= 1; ++dz) {
+			auto chunk = std::make_shared<Chunk>();
+			chunk->cpos = { dx, dz };
+			chunk->state.store(ChunkState::Generated);
+			chunk->FillSlices(0, 63, BLOCK_STONE);
+			chunk->GenerateSkylightMap();
+			lightQueueWorld.chunks[Int32_2{ dx, dz }] = std::move(chunk);
+		}
+	}
+	auto scheduleLightBurst = [&] {
+		for (int x = 0; x < 32; ++x) {
+			for (int z = 0; z < 16; ++z)
+				lightQueueWorld.lightManager.ScheduleLightRegion({ x, 0, z }, { x, CHUNK_HEIGHT - 1, z },
+				                                                 LightType::Sky);
+		}
+	};
+	Bench("light_queue_budget_16384", 0, [&] {
+		if (lightQueueWorld.lightManager.PendingLightUpdates() == 0)
+			scheduleLightBurst();
+		lightQueueWorld.lightManager.ProcessLightQueue(lightQueueWorld, 16384);
+		return lightQueueWorld.lightManager.PendingLightUpdates();
 	});
 
 	WorldManager lightBorderWorld;
