@@ -1252,6 +1252,62 @@ void TestRedstoneWireDecay() {
 		CHECK_EQ(int(world.GetMetadata({ x, 64, 8 })), 0);
 }
 
+void TestRedstoneLongWire() {
+	WorldManager world;
+	std::vector<std::shared_ptr<Chunk>> chunks;
+	for (int cx = 0; cx < 8; ++cx) {
+		auto chunk = std::make_shared<Chunk>();
+		chunk->cpos = { cx, 0 };
+		chunk->state.store(ChunkState::Generated);
+		for (int lx = 0; lx < CHUNK_WIDTH; ++lx) {
+			chunk->SetBlockRaw({ lx, 63, 8 }, BLOCK_STONE);
+			chunk->SetBlockRaw({ lx, 64, 8 }, BLOCK_REDSTONE);
+			chunk->SetMetaRaw({ lx, 64, 8 }, 0);
+		}
+		world.chunks[Int32_2{ cx, 0 }] = chunk;
+		chunks.push_back(std::move(chunk));
+	}
+	// A lever mounted on the stone under the first wire hard-powers it.
+	chunks[0]->SetBlockRaw({ 0, 63, 9 }, BLOCK_LEVER);
+	chunks[0]->SetMetaRaw({ 0, 63, 9 },
+	                      uint8_t(GetMetaFromDirection(BLOCK_LEVER, Cardinal::Value::South) | 0b1000));
+
+	// Solve starting at the far end so a full-pass solver only advances power
+	// one cell per pass.
+	RedstoneManager::RefreshWireAt(world, { 127, 64, 8 });
+	for (int x = 0; x < 128; ++x) {
+		const int expected = std::max(15 - x, 0);
+		CHECK_EQ(int(world.GetMetadata({ x, 64, 8 })), expected);
+	}
+
+	// Removing the source must decay the entire line back to zero.
+	chunks[0]->SetBlockRaw({ 0, 63, 9 }, BLOCK_AIR);
+	RedstoneManager::RefreshWireAt(world, { 127, 64, 8 });
+	for (int x = 0; x < 128; ++x)
+		CHECK_EQ(int(world.GetMetadata({ x, 64, 8 })), 0);
+}
+
+void TestRedstoneReentrantUpdate() {
+	WorldManager world;
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 0, 0 };
+	chunk->state.store(ChunkState::Generated);
+	for (int x = 0; x < 4; ++x) {
+		chunk->SetBlockRaw({ x, 63, 8 }, BLOCK_STONE);
+		chunk->SetBlockRaw({ x, 64, 8 }, BLOCK_REDSTONE);
+	}
+	// A torch with an invalid attachment. Neighbor notifications during the
+	// solve break it, which synchronously triggers a nested redstone update.
+	// The outer solve must not lose its scratch state when that happens.
+	chunk->SetBlockRaw({ 0, 62, 8 }, BLOCK_REDSTONE_TORCH_ON);
+	world.chunks[Int32_2{ 0, 0 }] = chunk;
+
+	RedstoneManager::RefreshWireAt(world, { 3, 64, 8 });
+	CHECK_EQ(int(world.GetBlockId({ 0, 62, 8 })), int(BLOCK_AIR));
+	for (int x = 0; x < 4; ++x)
+		CHECK_EQ(int(world.GetMetadata({ x, 64, 8 })), 0);
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1449,6 +1505,8 @@ std::vector<TestCase> Tests() {
 		{ "deferred_update_batch", TestDeferredUpdateBatch },
 		{ "torch_burnout_window", TestTorchBurnoutWindow },
 		{ "redstone_wire_decay", TestRedstoneWireDecay },
+		{ "redstone_long_wire", TestRedstoneLongWire },
+		{ "redstone_reentrant_update", TestRedstoneReentrantUpdate },
 		{ "pathfinder_flat", TestPathfinderFlat },
 		{ "region_fixture", TestRegionFixture },
 		{ "region_generated_round_trip", TestRegionGeneratedRoundTrip },
@@ -1749,6 +1807,33 @@ void RunBenchmarks() {
 	Bench("redstone_trigger_update", 0, [&] {
 		RedstoneManager::TriggerRedstoneUpdate(dustWorld, { 0, 64, 8 }, BLOCK_REDSTONE, BLOCK_REDSTONE);
 		return size_t(dustWorld.GetMetadata({ 0, 64, 8 }));
+	});
+
+	// 128-block wire across eight chunks, solved from the far end so the
+	// full-pass solver has the worst possible propagation order.
+	WorldManager longWireWorld;
+	std::vector<std::shared_ptr<Chunk>> longWireChunks;
+	for (int cx = 0; cx < 8; ++cx) {
+		auto chunk = std::make_shared<Chunk>();
+		chunk->cpos = { cx, 0 };
+		chunk->state.store(ChunkState::Generated);
+		for (int lx = 0; lx < CHUNK_WIDTH; ++lx) {
+			chunk->SetBlockRaw({ lx, 63, 8 }, BLOCK_STONE);
+			chunk->SetBlockRaw({ lx, 64, 8 }, BLOCK_REDSTONE);
+			chunk->SetMetaRaw({ lx, 64, 8 }, 0);
+		}
+		longWireWorld.chunks[Int32_2{ cx, 0 }] = chunk;
+		longWireChunks.push_back(std::move(chunk));
+	}
+	longWireChunks[0]->SetBlockRaw({ 0, 63, 9 }, BLOCK_LEVER);
+	longWireChunks[0]->SetMetaRaw({ 0, 63, 9 },
+	                              uint8_t(GetMetaFromDirection(BLOCK_LEVER, Cardinal::Value::South) | 0b1000));
+	Bench("redstone_long_wire_power_128", 0, [&] {
+		for (auto& chunk : longWireChunks)
+			for (int lx = 0; lx < CHUNK_WIDTH; ++lx)
+				chunk->SetMetaRaw({ lx, 64, 8 }, 0);
+		RedstoneManager::RefreshWireAt(longWireWorld, { 127, 64, 8 });
+		return size_t(longWireWorld.GetMetadata({ 0, 64, 8 }));
 	});
 
 	std::vector<std::unique_ptr<Entity>> massEntities;
