@@ -802,6 +802,21 @@ void TestSubRegionDedup() {
 	CHECK_EQ(sender.tickSubRegions.size(), size_t(1));
 }
 
+void TestPathfinderFlat() {
+	WorldManager world;
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 0, 0 };
+	chunk->state.store(ChunkState::Generated);
+	chunk->FillSlices(0, 3, BLOCK_STONE);
+	world.chunks[Int32_2{ 0, 0 }] = chunk;
+
+	Pathfinder pathfinder(&world);
+	auto path = pathfinder.FindPath({ 2, 4, 2 }, { 13, 4, 13 }, 0.6f, 1.8f, 20.0f);
+	CHECK(!path.empty());
+	if (!path.empty())
+		CHECK((path.back() == Int3{ 13, 4, 13 }));
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -936,6 +951,7 @@ std::vector<TestCase> Tests() {
 		{ "entity_index", TestEntityIndex },
 		{ "equipment_dirty_gating", TestEquipmentDirtyGating },
 		{ "subregion_dedup", TestSubRegionDedup },
+		{ "pathfinder_flat", TestPathfinderFlat },
 		{ "region_fixture", TestRegionFixture },
 		{ "region_generated_round_trip", TestRegionGeneratedRoundTrip },
 		{ "region_overwrite_reuses_sectors", TestRegionOverwriteReusesSectors },
