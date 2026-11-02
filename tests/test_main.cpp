@@ -1335,6 +1335,36 @@ void TestConfigFixture() {
 	CHECK_EQ(reloaded.GetAsString("motd"), std::string("A fixture server  "));
 }
 
+void TestString16IntoReuse() {
+	NetworkStream out(-1);
+	const std::string longText(200, 'a');
+	out.WriteString16(longText);
+	out.WriteString16("héllo ☃");
+	const auto& bytes = out.GetRawWriteBuffer();
+
+	NetworkStream in(-1);
+	in.AppendReadData(bytes.data(), bytes.size());
+	std::string buffer;
+	in.ReadString16Into(buffer);
+	CHECK_EQ(buffer, longText);
+	const size_t capacity = buffer.capacity();
+	in.ReadString16Into(buffer);
+	CHECK_EQ(buffer, std::string("héllo ☃"));
+	CHECK_EQ(buffer.capacity(), capacity);
+	CHECK(!in.IsShortRead());
+
+	// A short read clears the output and must not leave a partial message.
+	NetworkStream partial(-1);
+	partial.WriteString16("abc");
+	const auto partialBytes = partial.GetRawWriteBuffer();
+	NetworkStream shortIn(-1);
+	shortIn.AppendReadData(partialBytes.data(), 3);
+	buffer = "stale";
+	shortIn.ReadString16Into(buffer);
+	CHECK(buffer.empty());
+	CHECK(shortIn.IsShortRead());
+}
+
 void TestPacketRoundTrips() {
 	// Round-trip through an in-memory buffer using the same read/write path as
 	// a socket, so serializer and deserializer must agree on the wire layout.
@@ -1514,6 +1544,7 @@ std::vector<TestCase> Tests() {
 		{ "region_manager_save_queue", TestRegionManagerSaveQueue },
 		{ "recipe_mirror", TestRecipeMirror },
 		{ "config_fixture", TestConfigFixture },
+		{ "string16_into_reuse", TestString16IntoReuse },
 		{ "packet_round_trips", TestPacketRoundTrips },
 		{ "network_stream", TestNetworkStream },
 	};
@@ -2217,6 +2248,68 @@ void RunBenchmarks() {
 			blockPacket.Serialize(packetStream);
 		}
 		return packetStream.GetRawWriteBuffer().size();
+	});
+
+	NetworkStream reuseReader(-1);
+	thread_local Packet::ChatMessage reuseChat;
+	Bench("packet_chat_deserialize_reuse", chatBytes.size(), [&] {
+		reuseReader.ClearReadBuffer();
+		reuseReader.AppendReadData(chatBytes.data(), chatBytes.size());
+		reuseChat.Deserialize(reuseReader);
+		return reuseChat.message.size();
+	});
+
+	// The chat handler's pre-validation path. The old check always converted to
+	// UCS-2; the new one skips that allocation for short ASCII messages.
+	const std::string asciiChat = "<Steve> the quick brown fox jumps";
+	Bench("chat_limit_check_ucs2", 0, [&] {
+		return ToUCS2(asciiChat).size() > 100 ? size_t(1) : size_t(0);
+	});
+	Bench("chat_limit_check_ascii", 0, [&] {
+		const bool shortAscii =
+		    asciiChat.size() <= 100 &&
+		    std::all_of(asciiChat.begin(), asciiChat.end(), [](unsigned char _c) { return _c < 0x80; });
+		return (!shortAscii && ToUCS2(asciiChat).size() > 100) ? size_t(1) : size_t(0);
+	});
+
+	// Concatenated packets parsed the way the dispatcher does it: read the id,
+	// then deserialize into a persistent object per packet type.
+	NetworkStream dispatchOut(-1);
+	for (int i = 0; i < 100; ++i) {
+		playerPosition.Serialize(dispatchOut);
+		shortChat.Serialize(dispatchOut);
+		blockPacket.Serialize(dispatchOut);
+	}
+	const auto dispatchBytes = dispatchOut.GetRawWriteBuffer();
+	Bench("packet_dispatch_parse_mixed", dispatchBytes.size(), [&] {
+		NetworkStream in(-1);
+		in.AppendReadData(dispatchBytes.data(), dispatchBytes.size());
+		thread_local Packet::ChatMessage dispatchChat;
+		Packet::PlayerPosition dispatchPosition;
+		Packet::SetBlock dispatchBlock;
+		size_t decoded = 0;
+		while (in.Mark() < dispatchBytes.size()) {
+			const PacketId packetId = in.Read<PacketId>();
+			switch (packetId) {
+			case PacketId::PlayerPosition:
+				dispatchPosition.Deserialize(in);
+				decoded += 1;
+				break;
+			case PacketId::ChatMessage:
+				dispatchChat.Deserialize(in);
+				decoded += dispatchChat.message.size();
+				break;
+			case PacketId::SetBlock:
+				dispatchBlock.Deserialize(in);
+				decoded += 1;
+				break;
+			default:
+				return size_t(0);
+			}
+			if (in.IsShortRead())
+				return size_t(0);
+		}
+		return decoded;
 	});
 
 	std::cout << "BENCH sink=" << benchSink << "\n";
