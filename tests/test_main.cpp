@@ -19,6 +19,7 @@
 #include "chunk_broadcaster.h"
 #include "chunk_sender.h"
 #include "chunk_serializer.h"
+#include "commands/command.h"
 #include "commands/strategos.h"
 #include "config/config.h"
 #include "crafting/recipe_manager.h"
@@ -1699,6 +1700,61 @@ void TestLoadedChunkClimateBaked() {
 	regions.Release();
 }
 
+void TestSendChatFastPath() {
+	Runtime runtime;
+	PlayerSession session(-1, runtime);
+
+	auto decodeMessages = [](const std::vector<uint8_t>& bytes) {
+		std::vector<std::string> out;
+		NetworkStream in(-1);
+		in.AppendReadData(bytes.data(), bytes.size());
+		while (in.Mark() < bytes.size()) {
+			CHECK_EQ(int(in.Read<PacketId>()), int(PacketId::ChatMessage));
+			out.push_back(in.ReadString16());
+		}
+		return out;
+	};
+	auto send = [&](const std::string& _message) {
+		session.stream.ClearWriteBuffer();
+		SendChat(session, _message);
+		const auto bytes = session.stream.GetRawWriteBuffer();
+		return decodeMessages(bytes);
+	};
+
+	CHECK(send("").empty());
+
+	auto shortAscii = send("Teleported Steve");
+	CHECK_EQ(shortAscii.size(), size_t(1));
+	CHECK_EQ(shortAscii[0], std::string("Teleported Steve"));
+
+	auto colored = send("§eHello world");
+	CHECK_EQ(colored.size(), size_t(1));
+	CHECK_EQ(colored[0], std::string("§eHello world"));
+
+	const std::string longAscii(300, 'a');
+	auto chunks = send(longAscii);
+	CHECK_EQ(chunks.size(), size_t(3));
+	CHECK_EQ(chunks[0].size(), size_t(119));
+	CHECK_EQ(chunks[1].size(), size_t(119));
+	CHECK_EQ(chunks[2].size(), size_t(62));
+	std::string rebuilt;
+	for (auto& part : chunks)
+		rebuilt += part;
+	CHECK_EQ(rebuilt, longAscii);
+
+	// Color prefixes repeat on continuation chunks like the old path.
+	const std::string coloredLong = "§e" + std::string(200, 'b');
+	auto coloredChunks = send(coloredLong);
+	CHECK_EQ(coloredChunks.size(), size_t(2));
+	CHECK_EQ(coloredChunks[0], coloredLong.substr(0, coloredChunks[0].size()));
+	CHECK(coloredChunks[1].starts_with("§e"));
+
+	// Non-simple text still uses the UCS-2 path and round-trips.
+	auto unicode = send("héllo ☃");
+	CHECK_EQ(unicode.size(), size_t(1));
+	CHECK_EQ(unicode[0], std::string("héllo ☃"));
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1913,6 +1969,7 @@ std::vector<TestCase> Tests() {
 		{ "unlight_early_out", TestUnlightEarlyOut },
 		{ "random_tick_cache", TestRandomTickCache },
 		{ "loaded_chunk_climate", TestLoadedChunkClimateBaked },
+		{ "send_chat_fast_path", TestSendChatFastPath },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "collision_shape_storage", TestCollisionShapeStorage },
 		{ "entity_index", TestEntityIndex },
@@ -2099,6 +2156,30 @@ void RunBenchmarks() {
 	Bench("pathfinder_flat", 0, [&] {
 		auto path = pathfinder.FindPath({ 2, 4, 2 }, { 13, 4, 13 }, 0.6f, 1.8f, 20.0f);
 		return path.size();
+	});
+
+	Runtime feedbackRuntime;
+	PlayerSession feedbackSession(-1, feedbackRuntime);
+	const std::string feedbackLine = "§eTeleported Steve to 12, 64, -7";
+	Bench("command_feedback_single", feedbackLine.size(), [&] {
+		feedbackSession.stream.ClearWriteBuffer();
+		SendChat(feedbackSession, feedbackLine);
+		return feedbackSession.stream.GetRawWriteBuffer().size();
+	});
+	const std::string longFeedback(1000, 'a');
+	Bench("command_feedback_chunked", longFeedback.size(), [&] {
+		feedbackSession.stream.ClearWriteBuffer();
+		SendChat(feedbackSession, longFeedback);
+		return feedbackSession.stream.GetRawWriteBuffer().size();
+	});
+	std::vector<std::string> helpLines;
+	for (int i = 0; i < 30; ++i)
+		helpLines.push_back("§7command" + std::to_string(i) + ", ");
+	Bench("command_feedback_help_batch", 0, [&] {
+		feedbackSession.stream.ClearWriteBuffer();
+		for (const auto& line : helpLines)
+			SendChat(feedbackSession, line);
+		return feedbackSession.stream.GetRawWriteBuffer().size();
 	});
 
 	strategos::BrigadierContext commandTree;
