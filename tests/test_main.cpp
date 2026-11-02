@@ -1830,6 +1830,55 @@ void TestContainerMirrorSync() {
 	CHECK(furnaceInteraction.TickDiff().empty());
 }
 
+void TestCommandLiteralIndex() {
+	strategos::BrigadierContext tree;
+	auto allow = [](void*) { return true; };
+	auto noop = [](const strategos::CmdNode&, void*) -> std::string { return {}; };
+	auto selectFirst = [](const strategos::CmdNode&, void* _ud) -> std::string {
+		*static_cast<int*>(_ud) = 1;
+		return {};
+	};
+	auto selectSecond = [](const strategos::CmdNode&, void* _ud) -> std::string {
+		*static_cast<int*>(_ud) = 2;
+		return {};
+	};
+	auto selectInteger = [](const strategos::CmdNode& _cmd, void* _ud) -> std::string {
+		*static_cast<int*>(_ud) = 3 + _cmd.get_arg<int>("n").value_or(0);
+		return {};
+	};
+
+	for (int i = 0; i < 12; ++i)
+		tree.add_command(strategos::Node::literal("cmd" + std::to_string(i)).executes(noop));
+	tree.add_command(strategos::Node::literal("dup").executes(selectFirst));
+	tree.add_command(strategos::Node::literal("dup").executes(selectSecond));
+
+	int which = 0;
+	CHECK(tree.execute("dup", &which, allow).has_value());
+	CHECK_EQ(which, 1);
+	CHECK(tree.execute("cmd11", nullptr, allow).has_value());
+	CHECK(!tree.execute("nope", nullptr, allow).has_value());
+
+	// Adding commands after an index build must invalidate it.
+	tree.add_command(strategos::Node::literal("later").executes(selectSecond));
+	which = 0;
+	CHECK(tree.execute("later", &which, allow).has_value());
+	CHECK_EQ(which, 2);
+	which = 0;
+	CHECK(tree.execute("dup", &which, allow).has_value());
+	CHECK_EQ(which, 1);
+
+	// Nodes mixing literals and typed children still use the linear matcher.
+	strategos::Node mixed = strategos::Node::literal("mixed");
+	for (int i = 0; i < 9; ++i)
+		mixed.then(strategos::Node::literal("opt" + std::to_string(i)).executes(noop));
+	mixed.then(strategos::Node::integer("n", 0, 10).executes(selectInteger));
+	tree.add_command(std::move(mixed));
+	which = 0;
+	CHECK(tree.execute("mixed 5", &which, allow).has_value());
+	CHECK_EQ(which, 8);
+	CHECK(tree.execute("mixed opt8", nullptr, allow).has_value());
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -2045,6 +2094,7 @@ std::vector<TestCase> Tests() {
 		{ "random_tick_cache", TestRandomTickCache },
 		{ "loaded_chunk_climate", TestLoadedChunkClimateBaked },
 		{ "send_chat_fast_path", TestSendChatFastPath },
+		{ "command_literal_index", TestCommandLiteralIndex },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "collision_shape_storage", TestCollisionShapeStorage },
 		{ "entity_index", TestEntityIndex },
@@ -2257,6 +2307,20 @@ void RunBenchmarks() {
 		for (const auto& line : helpLines)
 			SendChat(feedbackSession, line);
 		return feedbackSession.stream.GetRawWriteBuffer().size();
+	});
+
+	strategos::BrigadierContext lookupTree;
+	auto lookupNoop = [](const strategos::CmdNode&, void*) -> std::string { return {}; };
+	for (int i = 0; i < 30; ++i)
+		lookupTree.add_command(strategos::Node::literal("cmd" + std::to_string(i)).executes(lookupNoop));
+	auto lookupAllow = [](void*) { return true; };
+	Bench("command_lookup_known", 0, [&] {
+		auto result = lookupTree.execute("cmd29", nullptr, lookupAllow);
+		return result.has_value() ? result->size() : size_t(0);
+	});
+	Bench("command_lookup_unknown", 0, [&] {
+		auto result = lookupTree.execute("nope", nullptr, lookupAllow);
+		return result.has_value() ? result->size() : size_t(0);
 	});
 
 	strategos::BrigadierContext commandTree;
