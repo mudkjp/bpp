@@ -1162,6 +1162,44 @@ void TestTrackerMassDespawn() {
 	CHECK_EQ(staleTracker.staleVisibilityErases, size_t(1));
 }
 
+void TestMobileLavaState() {
+	WorldManager world;
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 0, 0 };
+	chunk->state.store(ChunkState::Generated);
+	chunk->FillSlices(0, 63, BLOCK_STONE);
+	chunk->SetBlockRaw({ 8, 64, 8 }, BLOCK_LAVA_STILL);
+	world.chunks[Int32_2{ 0, 0 }] = chunk;
+
+	EntityManager manager;
+	manager.world = &world;
+	EntityId nextId = 1;
+	manager.nextEntityId = &nextId;
+	auto mob = std::make_shared<MobileEntity>();
+	mob->position = { 8.5, 64.0, 8.5 };
+	mob->RebuildCollider();
+	manager.AddEntity(mob);
+
+	manager.Tick();
+	CHECK(mob->inLava);
+	CHECK(mob->fireTicks > 0);
+
+	// Leaving the lava clears the flag and starts the burn countdown. The
+	// mobile tick reuses that same state instead of re-scanning the volume.
+	chunk->SetBlockRaw({ 8, 64, 8 }, BLOCK_AIR);
+	const int burningBefore = mob->fireTicks;
+	manager.Tick();
+	CHECK(!mob->inLava);
+	CHECK(mob->fireTicks == burningBefore - 1);
+
+	// Water is still detected independently and extinguishes the burn.
+	chunk->SetBlockRaw({ 8, 64, 8 }, BLOCK_WATER_STILL);
+	manager.Tick();
+	CHECK(mob->inWater);
+	CHECK(!mob->inLava);
+	CHECK(mob->fireTicks <= 0);
+}
+
 void TestEntityTickScratch() {
 	struct StationaryEntity : Entity {
 		void Tick() override {}
@@ -2798,6 +2836,7 @@ std::vector<TestCase> Tests() {
 		{ "map_column_data", TestMapColumnData },
 		{ "recipe_empty_grid", TestRecipeEmptyGrid },
 		{ "find_top_solid_block", TestFindTopSolidBlock },
+		{ "mobile_lava_state", TestMobileLavaState },
 		{ "container_mirror_sync", TestContainerMirrorSync },
 		{ "player_save_queue", TestPlayerSaveQueue },
 		{ "command_parsing", TestCommandParsing },
@@ -3653,6 +3692,31 @@ void RunBenchmarks() {
 	});
 	std::cout << std::format("BENCH tracker_mass_despawn_operations  removed=1000 full_map_scans=0 stale_visibility_erases={}\n",
 	                         massTracker.staleVisibilityErases);
+
+	WorldManager mobWorld;
+	for (int cx = -1; cx <= 1; ++cx) {
+		for (int cz = -1; cz <= 5; ++cz) {
+			auto chunk = std::make_shared<Chunk>();
+			chunk->cpos = { cx, cz };
+			chunk->state.store(ChunkState::Generated);
+			chunk->FillSlices(0, 63, BLOCK_STONE);
+			mobWorld.chunks[Int32_2{ cx, cz }] = std::move(chunk);
+		}
+	}
+	EntityManager mobManager;
+	mobManager.world = &mobWorld;
+	EntityId mobNextId = 1;
+	mobManager.nextEntityId = &mobNextId;
+	for (int i = 0; i < 1000; ++i) {
+		auto mob = std::make_shared<MobileEntity>();
+		mob->position = { 2.0 + double(i % 12), 64.0, 2.0 + double((i / 12) % 62) };
+		mob->RebuildCollider();
+		mobManager.AddEntity(mob);
+	}
+	Bench("mobile_entity_tick_1000", 0, [&] {
+		mobManager.Tick();
+		return mobManager.entities.size();
+	});
 
 	struct BenchEntity : Entity {
 		void Tick() override {}
