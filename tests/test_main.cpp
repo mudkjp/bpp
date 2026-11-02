@@ -1191,6 +1191,18 @@ void TestCollisionShapeStorage() {
 	CHECK_EQ(shape.boxes[2].minX, 2.0);
 }
 
+void TestDeferredUpdateBatch() {
+	WorldManager world;
+	world.SetFrozen(true);
+	for (int i = 0; i < 1000; ++i)
+		world.NotifyNeighborsOfUpdate({ i % 16, 64, i / 16 }, BLOCK_STONE);
+
+	CHECK_EQ(world.PendingDeferredUpdates(), size_t(1000));
+	world.ProcessDeferredUpdates();
+	CHECK_EQ(world.PendingDeferredUpdates(), size_t(0));
+	world.SetFrozen(false);
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1338,6 +1350,7 @@ std::vector<TestCase> Tests() {
 		{ "subregion_dedup", TestSubRegionDedup },
 		{ "block_change_dedup", TestBlockChangeDedup },
 		{ "chunk_sender_stationary_scan", TestChunkSenderStationaryScan },
+		{ "deferred_update_batch", TestDeferredUpdateBatch },
 		{ "pathfinder_flat", TestPathfinderFlat },
 		{ "region_fixture", TestRegionFixture },
 		{ "region_generated_round_trip", TestRegionGeneratedRoundTrip },
@@ -1589,6 +1602,16 @@ void RunBenchmarks() {
 	Bench("neighbor_update_6", 0, [&] {
 		neighborWorld.NotifyNeighborsOfUpdate({ 8, 64, 8 }, BLOCK_STONE);
 		return size_t(6);
+	});
+
+	WorldManager deferredWorld;
+	deferredWorld.SetFrozen(true);
+	Bench("deferred_neighbor_updates_10000", 0, [&] {
+		for (int i = 0; i < 10000; ++i)
+			deferredWorld.NotifyNeighborsOfUpdate({ i % 16, 64, i / 16 }, BLOCK_STONE);
+		const size_t pending = deferredWorld.PendingDeferredUpdates();
+		deferredWorld.ProcessDeferredUpdates();
+		return pending;
 	});
 
 	std::vector<std::unique_ptr<Entity>> massEntities;

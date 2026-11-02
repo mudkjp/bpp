@@ -89,7 +89,7 @@ private:
 		BlockType block;
 		BlockType oldBlock;
 	};
-	std::deque<DeferredUpdate> deferredUpdates;
+	std::vector<DeferredUpdate> deferredUpdates;
 	bool frozen = false;
 	bool replayingDeferred = false;
 	static BiomeGenerator biomeGenerator;
@@ -180,6 +180,10 @@ public:
 	void SetFrozen(bool _frozen) noexcept {
 		frozen = _frozen;
 	}
+	size_t PendingDeferredUpdates() const {
+		return deferredUpdates.size();
+	}
+	void ProcessDeferredUpdates();
 	// For creating a fresh tile entity for generation etc
 	void CreateTileEntity(std::shared_ptr<TileEntity> _tileEntity);
 	// For registering a tile entity that already exists in the world (e.g. loaded from disk)

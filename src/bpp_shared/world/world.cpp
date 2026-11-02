@@ -382,6 +382,25 @@ std::vector<AABB> WorldManager::GetCollidingBoundingBoxes(const AABB& _area, Ent
 	return collidingBoxes;
 }
 
+void WorldManager::ProcessDeferredUpdates() {
+	if (deferredUpdates.empty())
+		return;
+
+	// Process the whole batch against the final world state. Replaying is
+	// suppressed so callbacks cannot recursively append to this vector while
+	// it is being iterated.
+	const bool wasReplaying = replayingDeferred;
+	replayingDeferred = true;
+	for (const auto& update : deferredUpdates) {
+		if (update.type == DeferredUpdateType::Neighbors)
+			NotifyNeighborsOfUpdate(update.position, update.block);
+		else
+			RedstoneManager::TriggerRedstoneUpdate(*this, update.position, update.block, update.oldBlock);
+	}
+	deferredUpdates.clear();
+	replayingDeferred = wasReplaying;
+}
+
 // Tick
 void WorldManager::Tick(const std::vector<ClientPosition>& _players, bool _advanceSimulation, TickProfiler* _profiler) {
 	using Clock = std::chrono::steady_clock;
@@ -412,14 +431,7 @@ void WorldManager::Tick(const std::vector<ClientPosition>& _players, bool _advan
 	if (_advanceSimulation) {
 		auto blockStart = _profiler ? Clock::now() : Clock::time_point{};
 		replayingDeferred = true;
-		while (!deferredUpdates.empty()) {
-			auto update = deferredUpdates.front();
-			deferredUpdates.pop_front();
-			if (update.type == DeferredUpdateType::Neighbors)
-				NotifyNeighborsOfUpdate(update.position, update.block);
-			else
-				RedstoneManager::TriggerRedstoneUpdate(*this, update.position, update.block, update.oldBlock);
-		}
+		ProcessDeferredUpdates();
 		replayingDeferred = false;
 		tickScheduler.Tick();
 		if (_profiler)
