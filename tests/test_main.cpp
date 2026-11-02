@@ -18,6 +18,7 @@
 #include "chunk.h"
 #include "chunk_serializer.h"
 #include "config/config.h"
+#include "crafting/recipe_manager.h"
 #include "helpers/deflate_pool.h"
 #include "helpers/endian_convert.h"
 #include "helpers/packed_array.h"
@@ -30,6 +31,7 @@
 #include "world/generator/overworld/chunk_gen.h"
 #include "world/storage/region.h"
 #include "world/storage/region_manager.h"
+#include "world/world.h"
 
 #include <algorithm>
 #include <array>
@@ -467,6 +469,24 @@ void TestRegionFixture() {
 			}
 		}
 	}
+
+	Tag entity;
+	entity.type = TAG_COMPOUND;
+	entity.name = "";
+	Tag entityId;
+	entityId.type = TAG_STRING;
+	entityId.name = "id";
+	entityId.stringValue = "Pig";
+	entity.compound["id"] = entityId;
+	auto entityTags = std::make_shared<const std::vector<Tag>>(std::vector<Tag>{ entity });
+	auto encodedWithEntities = region.EncodeNbtData(chunk, 424242, entityTags);
+	auto decodedWithEntities = region.DecodeNbtData(encodedWithEntities);
+	CHECK(decodedWithEntities != nullptr);
+	if (decodedWithEntities) {
+		CHECK_EQ(decodedWithEntities->entityTags.size(), size_t(1));
+		if (!decodedWithEntities->entityTags.empty())
+			CHECK_EQ(decodedWithEntities->entityTags[0].Get("id").GetString(), std::string("Pig"));
+	}
 }
 
 void TestRegionOverwriteReusesSectors() {
@@ -495,6 +515,35 @@ void TestRegionOverwriteReusesSectors() {
 		CHECK_EQ(int(loaded->GetBlock({ 7, 42, 9 })), int(chunk->GetBlock({ 7, 42, 9 })));
 }
 
+void TestRegionGeneratedRoundTrip() {
+	TempDir temp("region-generated");
+	std::filesystem::copy_file(Fixture("region/r.0.0.mcr"), temp.path / "r.0.0.mcr");
+	Region region(Int32_2{ 0, 0 }, temp.path.string());
+
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 2, 3 };
+	OverworldGenerator gen(0x5EED);
+	gen.GenerateChunk(*chunk);
+	chunk->GenerateSkylightMap();
+
+	auto encoded = region.EncodeNbtData(chunk, 1234, nullptr);
+	auto decoded = region.DecodeNbtData(encoded);
+	CHECK(decoded != nullptr);
+	if (!decoded)
+		return;
+	CHECK_EQ(decoded->cpos, chunk->cpos);
+	for (int x = 0; x < CHUNK_WIDTH; ++x) {
+		for (int z = 0; z < CHUNK_WIDTH; ++z) {
+			for (int y = 0; y < CHUNK_HEIGHT; ++y) {
+				CHECK_EQ(int(decoded->GetBlock({ x, y, z })), int(chunk->GetBlock({ x, y, z })));
+				CHECK_EQ(int(decoded->GetMeta({ x, y, z })), int(chunk->GetMeta({ x, y, z })));
+				CHECK_EQ(int(decoded->GetBlockLight({ x, y, z })), int(chunk->GetBlockLight({ x, y, z })));
+				CHECK_EQ(int(decoded->GetSkyLight({ x, y, z })), int(chunk->GetSkyLight({ x, y, z })));
+			}
+		}
+	}
+}
+
 void TestRegionManagerSaveQueue() {
 	TempDir temp("region-manager");
 	RegionManager manager;
@@ -503,11 +552,16 @@ void TestRegionManagerSaveQueue() {
 	auto chunk = std::make_shared<Chunk>();
 	BuildSyntheticChunk(*chunk);
 
+	// Checking for a chunk must not create an empty region file.
+	CHECK(!manager.ChunkExists(Int32_2{ 0, 0 }));
+	CHECK(!std::filesystem::exists(temp.path / "r.0.0.mcr"));
+
 	// Saving the same chunk twice before a flush must only keep the newest
 	// snapshot, not queue two copies.
 	manager.SaveChunk(chunk, false);
 	manager.SaveChunk(chunk, false);
 	manager.FlushAll();
+	CHECK(std::filesystem::exists(temp.path / "r.0.0.mcr"));
 
 	manager.LoadChunk(Int32_2{ 0, 0 });
 	manager.iopool.wait();
@@ -546,6 +600,80 @@ void TestSkylightMap() {
 			for (int y = height; y < CHUNK_HEIGHT; ++y)
 				CHECK_EQ(int(chunk.GetSkyLight({ x, y, z })), 15);
 		}
+	}
+}
+
+void TestRecipeMirror() {
+	RecipeManager recipes;
+	recipes.AddShapedRecipe({ "AB" }, { { 'A', { ItemId(1), 0 } }, { 'B', { ItemId(2), 0 } } }, ItemStack{ 3, 1, 0 });
+
+	std::array<ItemStack, 9> normal{};
+	normal[0] = ItemStack{ 1, 1, 0 };
+	normal[1] = ItemStack{ 2, 1, 0 };
+	auto matched = recipes.MatchGrid(normal, { 3, 3 });
+	CHECK_EQ(matched.second.id, ItemId(3));
+	CHECK_EQ(matched.first[0].id, ItemId(1));
+	CHECK_EQ(matched.first[1].id, ItemId(2));
+	CHECK_EQ(matched.first[2].id, ItemId(Items::Id::INVALID));
+
+	std::array<ItemStack, 9> mirrored{};
+	mirrored[0] = ItemStack{ 2, 1, 0 };
+	mirrored[1] = ItemStack{ 1, 1, 0 };
+	auto mirroredMatch = recipes.MatchGrid(mirrored, { 3, 3 });
+	CHECK_EQ(mirroredMatch.second.id, ItemId(3));
+	CHECK_EQ(mirroredMatch.first[0].id, ItemId(2));
+	CHECK_EQ(mirroredMatch.first[1].id, ItemId(1));
+	CHECK_EQ(mirroredMatch.first[2].id, ItemId(Items::Id::INVALID));
+}
+
+void TestLightBorderNoOpScheduling() {
+	WorldManager world;
+	auto makeChunk = [](Int32_2 _pos) {
+		auto chunk = std::make_shared<Chunk>();
+		chunk->cpos = _pos;
+		chunk->state.store(ChunkState::Generated);
+		chunk->FillSlices(0, 63, BLOCK_STONE);
+		chunk->GenerateSkylightMap();
+		return chunk;
+	};
+	world.chunks[Int32_2{ 0, 0 }] = makeChunk({ 0, 0 });
+	world.chunks[Int32_2{ 1, 0 }] = makeChunk({ 1, 0 });
+
+	world.PropagateChunkLightBorders(Int32_2{ 0, 0 });
+	CHECK_EQ(world.lightManager.PendingLightUpdates(), size_t(0));
+}
+
+void TestChunkLightEmitters() {
+	WorldManager world;
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 2, 3 };
+	chunk->state.store(ChunkState::Generated);
+	chunk->SetBlockRaw({ 5, 70, 7 }, BLOCK_GLOWSTONE);
+	world.chunks[Int32_2{ 2, 3 }] = chunk;
+
+	world.SeedChunkLighting(Int32_2{ 2, 3 });
+	world.lightManager.ProcessLightQueue(world, INT_MAX);
+	CHECK_EQ(int(chunk->GetBlockLight({ 5, 70, 7 })), 15);
+}
+
+void TestCollisionFastPath() {
+	WorldManager world;
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 0, 0 };
+	chunk->state.store(ChunkState::Generated);
+	chunk->FillSlices(0, 10, BLOCK_STONE);
+	world.chunks[Int32_2{ 0, 0 }] = chunk;
+
+	const AABB area{ 0.2, 0.2, 0.2, 0.8, 0.8, 0.8 };
+	auto boxes = world.GetCollidingBoundingBoxes(area);
+	CHECK_EQ(boxes.size(), size_t(1));
+	if (!boxes.empty()) {
+		CHECK_EQ(boxes[0].minX, 0.0);
+		CHECK_EQ(boxes[0].minY, 0.0);
+		CHECK_EQ(boxes[0].minZ, 0.0);
+		CHECK_EQ(boxes[0].maxX, 1.0);
+		CHECK_EQ(boxes[0].maxY, 1.0);
+		CHECK_EQ(boxes[0].maxZ, 1.0);
 	}
 }
 
@@ -625,6 +753,40 @@ void TestNetworkStream() {
 	reader.DrainToBuffer();
 	CHECK_EQ(reader.ReadString16(), std::string("abc"));
 	CHECK(!reader.IsShortRead());
+
+	// A non-blocking flush that only sends part of a large buffer must keep
+	// the unsent tail intact and eventually deliver every byte exactly once.
+	int bigFds[2] = { -1, -1 };
+	CHECK_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, bigFds), 0);
+	if (bigFds[0] < 0 || bigFds[1] < 0)
+		return;
+	::fcntl(bigFds[0], F_SETFL, ::fcntl(bigFds[0], F_GETFL, 0) | O_NONBLOCK);
+	::fcntl(bigFds[1], F_SETFL, ::fcntl(bigFds[1], F_GETFL, 0) | O_NONBLOCK);
+	int sendBufferSize = 4096;
+	::setsockopt(bigFds[0], SOL_SOCKET, SO_SNDBUF, &sendBufferSize, sizeof(sendBufferSize));
+	{
+		NetworkStream sender(bigFds[0]);
+		std::vector<uint8_t> payload(512 * 1024);
+		for (size_t i = 0; i < payload.size(); ++i)
+			payload[i] = uint8_t(i * 31 + 7);
+		sender.WriteBytes(payload.data(), payload.size());
+		CHECK_EQ(sender.GetRawWriteBuffer().size(), payload.size());
+
+		std::vector<uint8_t> received;
+		received.reserve(payload.size());
+		for (int spin = 0; spin < 10000 && received.size() < payload.size(); ++spin) {
+			uint8_t chunk[8192];
+			for (;;) {
+				const ssize_t n = ::recv(bigFds[1], chunk, sizeof(chunk), 0);
+				if (n <= 0)
+					break;
+				received.insert(received.end(), chunk, chunk + n);
+			}
+			sender.FlushWriteBuffer();
+		}
+		CHECK(received == payload);
+		CHECK(sender.GetRawWriteBuffer().empty());
+	}
 #endif
 }
 
@@ -641,9 +803,14 @@ std::vector<TestCase> Tests() {
 		{ "ucs2_fixtures", TestUcs2Fixtures },
 		{ "chunk_serializer_fixture", TestChunkSerializerFixture },
 		{ "skylight_map", TestSkylightMap },
+		{ "light_border_noop", TestLightBorderNoOpScheduling },
+		{ "chunk_light_emitters", TestChunkLightEmitters },
+		{ "collision_fast_path", TestCollisionFastPath },
 		{ "region_fixture", TestRegionFixture },
+		{ "region_generated_round_trip", TestRegionGeneratedRoundTrip },
 		{ "region_overwrite_reuses_sectors", TestRegionOverwriteReusesSectors },
 		{ "region_manager_save_queue", TestRegionManagerSaveQueue },
+		{ "recipe_mirror", TestRecipeMirror },
 		{ "config_fixture", TestConfigFixture },
 		{ "network_stream", TestNetworkStream },
 	};
@@ -781,8 +948,28 @@ void RunBenchmarks() {
 		});
 	}
 
+	auto generatedRegionChunk = std::make_shared<Chunk>();
+	generatedRegionChunk->cpos = { 2, 3 };
+	gen.GenerateChunk(*generatedRegionChunk);
+	generatedRegionChunk->GenerateSkylightMap();
+	auto generatedEncoded = region.EncodeNbtData(generatedRegionChunk, 424242, nullptr);
+	Bench("region_encode_generated", chunkRaw.size(), [&] {
+		auto out = region.EncodeNbtData(generatedRegionChunk, 424242, nullptr);
+		return out.size();
+	});
+	Bench("region_decode_generated", chunkRaw.size(), [&] {
+		auto out = region.DecodeNbtData(generatedEncoded);
+		return out ? out->CountBlock(BlockType(BLOCK_STONE)) : 0;
+	});
+
 	Bench("ucs2_encode_decode_text", ucs2Text.size(), [&] {
 		auto u16 = ToUCS2(ucs2Text);
+		auto utf8 = ToUTF8(u16);
+		return utf8.size();
+	});
+	const std::string asciiText(4096, 'a');
+	Bench("ucs2_ascii_roundtrip", asciiText.size(), [&] {
+		auto u16 = ToUCS2(asciiText);
 		auto utf8 = ToUTF8(u16);
 		return utf8.size();
 	});
