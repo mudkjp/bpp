@@ -118,6 +118,10 @@ bool Region::AddChunk(std::shared_ptr<Chunk> _chunk, int64_t _timestamp,
 		return false;
 	}
 
+	return AddEncodedChunk(compressed, _chunk->cpos);
+}
+
+bool Region::AddEncodedChunk(const std::vector<uint8_t>& compressed, Int32_2 _cpos) {
 	// Only lock after encoding (hehe)
 	std::lock_guard<std::mutex> lock(mutex);
 
@@ -127,8 +131,8 @@ bool Region::AddChunk(std::shared_ptr<Chunk> _chunk, int64_t _timestamp,
 
 	// The header stores the sector count in a single byte
 	if (sectorsNeeded > 255) {
-		Logger::Error << "Region::AddChunk: chunk (" << _chunk->cpos.x << ", " << _chunk->cpos.z << ") needs "
-		              << sectorsNeeded << " sectors (max 255)\n";
+		Logger::Error << "Region::AddChunk: chunk (" << _cpos.x << ", " << _cpos.z << ") needs " << sectorsNeeded
+		              << " sectors (max 255)\n";
 		return false;
 	}
 
@@ -137,35 +141,43 @@ bool Region::AddChunk(std::shared_ptr<Chunk> _chunk, int64_t _timestamp,
 	// deliberately left out so its old sectors immediately become reusable;
 	// otherwise every save of the same chunk appends a new copy and the
 	// region file (plus the search for free space) grows without bound.
-	Int2 local{ _chunk->cpos.x & 31, _chunk->cpos.z & 31 };
+	Int2 local{ _cpos.x & 31, _cpos.z & 31 };
 	int index = local.x + local.z * 32;
 
-	std::vector<bool> occupied;
-	for (int i = 0; i < 1024; i++) {
-		if (i == index)
-			continue;
-		if (regionHeader[i].offset == 0)
-			continue;
-		uint32_t end = regionHeader[i].offset + regionHeader[i].numberOfSectors;
-		if (end > occupied.size())
-			occupied.resize(end, false);
-		for (uint32_t s = regionHeader[i].offset; s < end; s++)
-			occupied[s] = true;
-	}
-
-	// Find first free run of `sectorsNeeded` sectors starting at 2 (after header)
+	// Common case: the recompressed chunk still fits in its existing extent.
+	// Reuse it instead of rebuilding the 1024-entry occupancy map and
+	// searching for a free run. Any trailing sectors simply become free.
 	uint32_t chosenOffset = 0;
-	for (uint32_t s = 2;; s++) {
-		bool fits = true;
-		for (uint32_t j = 0; j < sectorsNeeded; j++) {
-			if (s + j < occupied.size() && occupied[s + j]) {
-				fits = false;
+	const auto& existingEntry = regionHeader[index];
+	if (existingEntry.offset >= 2 && existingEntry.numberOfSectors >= sectorsNeeded) {
+		chosenOffset = existingEntry.offset;
+	} else {
+		std::vector<bool> occupied;
+		for (int i = 0; i < 1024; i++) {
+			if (i == index)
+				continue;
+			if (regionHeader[i].offset == 0)
+				continue;
+			uint32_t end = regionHeader[i].offset + regionHeader[i].numberOfSectors;
+			if (end > occupied.size())
+				occupied.resize(end, false);
+			for (uint32_t s = regionHeader[i].offset; s < end; s++)
+				occupied[s] = true;
+		}
+
+		// Find first free run of `sectorsNeeded` sectors starting at 2 (after header)
+		for (uint32_t s = 2;; s++) {
+			bool fits = true;
+			for (uint32_t j = 0; j < sectorsNeeded; j++) {
+				if (s + j < occupied.size() && occupied[s + j]) {
+					fits = false;
+					break;
+				}
+			}
+			if (fits) {
+				chosenOffset = s;
 				break;
 			}
-		}
-		if (fits) {
-			chosenOffset = s;
-			break;
 		}
 	}
 
@@ -199,7 +211,7 @@ bool Region::AddChunk(std::shared_ptr<Chunk> _chunk, int64_t _timestamp,
 	file.write(reinterpret_cast<char*>(&format), 1);
 
 	// Compressed data
-	file.write(reinterpret_cast<char*>(compressed.data()), compressed.size());
+	file.write(reinterpret_cast<const char*>(compressed.data()), static_cast<std::streamsize>(compressed.size()));
 
 	// Pad to sector boundary
 	size_t written = 5 + compressed.size();
@@ -232,6 +244,13 @@ bool Region::AddChunk(std::shared_ptr<Chunk> _chunk, int64_t _timestamp,
 	regionHeader[index].numberOfSectors = uint8_t(sectorsNeeded);
 	return true;
 }
+
+uint32_t Region::ChunkSectorOffset(Int32_2 _cpos) {
+	std::lock_guard<std::mutex> lock(mutex);
+	Int2 local{ _cpos.x & 31, _cpos.z & 31 };
+	return regionHeader[local.x + local.z * 32].offset;
+}
+
 
 std::shared_ptr<Chunk> Region::GetChunk(Int32_2 _cpos, ReadStatus& _status) {
 	_status = ReadStatus::Error;

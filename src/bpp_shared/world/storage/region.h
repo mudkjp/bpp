@@ -54,6 +54,11 @@ public:
 	std::shared_ptr<Chunk> GetChunk(Int32_2 _cpos, ReadStatus& _status);
 
 	bool AddChunk(std::shared_ptr<Chunk> _chunk, int64_t _timestamp, std::shared_ptr<const std::vector<Tag>> _entities);
+	// Stores an already-compressed chunk payload. Exposed so callers/tests can
+	// exercise the sector placement logic without re-encoding the chunk.
+	bool AddEncodedChunk(const std::vector<uint8_t>& _compressed, Int32_2 _cpos);
+	// Sector offset currently assigned to a chunk, or 0 if absent (diagnostics/tests).
+	uint32_t ChunkSectorOffset(Int32_2 _cpos);
 	std::vector<uint8_t> EncodeNbtData(const std::shared_ptr<Chunk>& _chunk, int64_t _timestamp,
 	                                   std::shared_ptr<const std::vector<Tag>> _entities);
 	std::shared_ptr<Chunk> DecodeNbtData(const std::vector<uint8_t>& _rawData);
