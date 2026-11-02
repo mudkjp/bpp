@@ -79,6 +79,8 @@ enum class ChunkState : uint8_t {
 // Basically how stuff worked before SubChunks,
 // for those that prefer that system for the performance gain.
 // Plus we could fall back to those if all 8 subchunks are filled anyways.
+class WorldManager;
+
 struct Chunk {
 	static constexpr int VOLUME = CHUNK_WIDTH * CHUNK_HEIGHT * CHUNK_WIDTH;
 	static_assert(CHUNK_HEIGHT % SUB_CHUNK_SIZE == 0, "CHUNK_HEIGHT must be a multiple of SUB_CHUNK_SIZE");
@@ -99,6 +101,10 @@ struct Chunk {
 
 	bool isTerrainPopulated : 1 = false;
 	bool isModified : 1 = false;
+	// Set when the chunk is inserted into a world, so dirty writes can register
+	// the chunk in the world's save index.
+	WorldManager* worldOwner = nullptr;
+	void MarkModified();
 	bool spawnChunk : 1 = false;
 	bool refreshLighting : 1 = false;
 	bool climateBaked : 1 = false;
@@ -159,20 +165,20 @@ struct Chunk {
 		if (!InBounds(_pos.y))
 			return;
 		SetBlockRaw(_pos, _id);
-		isModified = true;
+		MarkModified();
 	}
 	inline void SetMeta(Int3 _pos, uint8_t _meta) {
 		if (!InBounds(_pos.y))
 			return;
 		SetMetaRaw(_pos, _meta);
-		isModified = true;
+		MarkModified();
 	}
 	inline bool SetBlockLight(Int3 _pos, uint8_t _val) {
 		if (!InBounds(_pos.y))
 			return false;
 		const bool changed = subChunks[size_t(_pos.y >> 4)].SetBlockLight(SubChunk::LocalIndex(_pos), _val);
 		if (changed)
-			isModified = true;
+			MarkModified();
 		return changed;
 	}
 	inline bool SetSkyLight(Int3 _pos, uint8_t _val) {
@@ -180,7 +186,7 @@ struct Chunk {
 			return false;
 		const bool changed = subChunks[size_t(_pos.y >> 4)].SetSkyLight(SubChunk::LocalIndex(_pos), _val);
 		if (changed)
-			isModified = true;
+			MarkModified();
 		return changed;
 	}
 	// Getters

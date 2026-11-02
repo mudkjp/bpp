@@ -606,15 +606,34 @@ void WorldManager::PerformRandomTicks(const std::vector<ClientPosition>& _player
 }
 
 void WorldManager::SaveChunks(const bool _saveIfEntities, const bool _deleteEntities) {
-	for (auto& [pos, chunk] : chunks) {
-		ChunkState s = chunk->state.load();
-		if (s < ChunkState::Generated)
-			continue;
-		if (s == ChunkState::Generating || s == ChunkState::Loading)
-			continue;
-		if (chunk->isModified || (entityManager.ChunkHasEntities(pos) && _saveIfEntities))
-			regionManager->SaveChunk(chunk, _deleteEntities);
+	auto saveAt = [&](Int32_2 pos) {
+		auto it = chunks.find(pos);
+		if (it == chunks.end() || !it->second)
+			return;
+		Chunk* chunk = it->second.get();
+		const ChunkState s = chunk->state.load();
+		if (s < ChunkState::Generated || s == ChunkState::Generating || s == ChunkState::Loading)
+			return;
+		if (regionManager)
+			regionManager->SaveChunk(it->second, _deleteEntities);
 		chunk->isModified = false;
+	};
+
+	// Only chunks that warmed the dirty index need saving.
+	for (auto it = dirtyChunks.begin(); it != dirtyChunks.end();) {
+		const Int32_2 pos = *it;
+		it = dirtyChunks.erase(it);
+		saveAt(pos);
+	}
+
+	// Entity-only chunks are saved on the slower entity cadence. Iterate the
+	// (much smaller) entity container map instead of scanning every chunk.
+	if (_saveIfEntities) {
+		for (const auto& [cpos, container] : entityManager.entityContainers) {
+			(void)container;
+			if (entityManager.ChunkHasEntities(cpos))
+				saveAt({ cpos.x, cpos.y });
+		}
 	}
 }
 
@@ -679,6 +698,7 @@ void WorldManager::Shutdown() {
 			auto c = std::make_shared<Chunk>();
 			c->cpos = cpos;
 			chunks.emplace(cpos, std::move(c));
+			AttachChunk(*chunks[cpos]);
 			TrackUnloadedChunk(cpos);
 			populateFrontier.emplace(cpos.x, cpos.z);
 		}
@@ -733,6 +753,7 @@ void WorldManager::DrainGenQueue() {
 			bool wasSpawnChunk = it->second->spawnChunk;
 			it->second = std::move(c);
 			it->second->spawnChunk = wasSpawnChunk;
+			AttachChunk(*it->second);
 
 			// Replay any writes that arrived while this chunk was unloaded.
 			auto pit = pendingBleedWrites.find(pos);
@@ -784,6 +805,7 @@ void WorldManager::DrainLoadQueue() {
 		bool wasSpawnChunk = chunk->spawnChunk;
 		chunk = std::move(loaded);
 		chunk->spawnChunk = wasSpawnChunk;
+		AttachChunk(*chunk);
 
 		bool needsLightingRefresh = chunk->refreshLighting;
 		chunk->refreshLighting = false;
@@ -810,7 +832,7 @@ void WorldManager::DrainLoadQueue() {
 		if (needsLightingRefresh) {
 			chunk->GenerateSkylightMap();
 			SeedChunkLighting(chunk->cpos);
-			chunk->isModified = true;
+			chunk->MarkModified();
 		}
 
 		loadingIt = loadingChunks.erase(loadingIt);
@@ -916,6 +938,7 @@ void WorldManager::RebuildUnloadedCandidates() {
 		else if (state == ChunkState::Loading)
 			loadingChunks.insert(pos);
 	}
+	RebuildDirtyChunks();
 }
 
 void WorldManager::RebuildPopulateFrontier() {
@@ -970,6 +993,7 @@ void WorldManager::UpdateLoadRadius(const std::vector<ClientPosition>& _players)
 			auto c = std::make_shared<Chunk>();
 			c->cpos = pos;
 			chunks.emplace(pos, std::move(c));
+			AttachChunk(*chunks[pos]);
 			TrackUnloadedChunk(pos);
 			populateFrontier.emplace(pos.x, pos.z);
 		}
@@ -995,6 +1019,7 @@ void WorldManager::UpdateLoadRadius(const std::vector<ClientPosition>& _players)
 			unloadedChunkIndex.erase({ it->first.x, it->first.z });
 			populateFrontier.erase({ it->first.x, it->first.z });
 			loadingChunks.erase(it->first);
+			dirtyChunks.erase(it->first);
 			it = chunks.erase(it);
 			continue;
 		}
@@ -1004,6 +1029,7 @@ void WorldManager::UpdateLoadRadius(const std::vector<ClientPosition>& _players)
 			regionManager->SaveChunk(it->second, /*unloadingEntities=*/true);
 			it->second->isModified = false;
 		}
+		dirtyChunks.erase(it->first);
 
 		entityManager.EraseContainer(it->first);
 		InvalidateChunkCache();
@@ -1089,7 +1115,7 @@ void WorldManager::PumpPipeline(const std::vector<ClientPosition>& _players) {
 				}
 				tlGen->GenerateChunk(*chunk);
 			}
-			chunk->isModified = true;
+			chunk->MarkModified();
 			chunk->GenerateSkylightMap();
 			chunk->state.store(ChunkState::Generated, std::memory_order_release);
 
@@ -1204,7 +1230,7 @@ void WorldManager::PopulateReady(int _maxPopulates) {
 			tlOverworld->PopulateChunk(*cit->second, wrapper);
 		auto& chunk = cit->second;
 		chunk->isTerrainPopulated = true;
-		chunk->isModified = true;
+		chunk->MarkModified();
 		chunk->state.store(ChunkState::Populated, std::memory_order_release);
 		populatedThisTick.insert(pos);
 		++populatedCount;
@@ -1252,7 +1278,7 @@ void WorldManager::SetBlockRaw(const Int3 _wpos, const BlockType _blockType, con
 
 	chunk->SetBlockRaw(local, _blockType);
 	chunk->SetMetaRaw(local, _metadata);
-	chunk->isModified = true;
+	chunk->MarkModified();
 }
 
 void WorldManager::SetBlock(const Int3 _wpos, const BlockType _blockType, const uint8_t _metadata,
@@ -1304,7 +1330,7 @@ void WorldManager::SetBlock(const Int3 _wpos, const BlockType _blockType, const 
 	}
 
 	chunk->SetMetaRaw(local, _metadata);
-	chunk->isModified = true;
+	chunk->MarkModified();
 
 	const Int3 pos = _wpos;
 	const int oldHeight = chunk->GetHeightValue(localXz);
@@ -1476,7 +1502,7 @@ void WorldManager::FillVolume(Int3 _posA, Int3 _posB, BlockType _type, uint8_t _
 				for (int z = z0; z <= z1; z++)
 					chunk->RecalculateSkyLightColumn({ x, z });
 			chunk->Compact();
-			chunk->isModified = true;
+			chunk->MarkModified();
 
 			// Let the light engine fix up whatever borders the fill. Faces between two chunks that are both
 			// part of the fill are skipped, those are filled anyway.
@@ -1543,6 +1569,7 @@ void WorldManager::InitSpawn() {
 			auto chunk = std::make_shared<Chunk>();
 			chunk->cpos = pos;
 			chunks[pos] = std::move(chunk);
+			AttachChunk(*chunks[pos]);
 			TrackUnloadedChunk(pos);
 			populateFrontier.emplace(pos.x, pos.z);
 			while (GetFirstUncoveredBlock(_x, _z) == BlockType::BLOCK_INVALID) {
@@ -1567,6 +1594,7 @@ void WorldManager::InitSpawn() {
 	}
 	this->spawnPoint = { sx, 64, sz };
 	chunks.clear(); // Clear all chunks so we can start fresh from the spawn area
+	dirtyChunks.clear();
 	unloadedChunkIndex.clear();
 	populateFrontier.clear();
 	loadingChunks.clear();

@@ -483,12 +483,14 @@ void Server::Startup() {
 				c->spawnChunk = true;
 				c->cpos = pos;
 				gameRuntime.world.chunks.emplace(pos, std::move(c));
+				gameRuntime.world.AttachChunk(*gameRuntime.world.chunks[pos]);
 			}
 			if (!gameRuntime.worldHell.chunks.contains(pos)) {
 				auto c = std::make_shared<Chunk>();
 				c->spawnChunk = true;
 				c->cpos = pos;
 				gameRuntime.worldHell.chunks.emplace(pos, std::move(c));
+				gameRuntime.worldHell.AttachChunk(*gameRuntime.worldHell.chunks[pos]);
 			}
 		}
 

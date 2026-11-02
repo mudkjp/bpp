@@ -7,6 +7,7 @@
 */
 
 #include "chunk.h"
+#include "world.h"
 #include <algorithm>
 
 int Chunk::GetHighestPoint() const {
@@ -20,6 +21,14 @@ int Chunk::GetHighestPoint() const {
 
 bool Chunk::CanBlockSeeSky(Int3 _pos) const {
 	return _pos.y >= GetHeightValue({ _pos.x, _pos.z });
+}
+
+void Chunk::MarkModified() {
+	if (isModified)
+		return;
+	isModified = true;
+	if (worldOwner)
+		worldOwner->MarkChunkDirty(cpos);
 }
 
 void Chunk::GenerateHeightMap() {
@@ -81,7 +90,7 @@ void Chunk::GenerateSkylightMap() {
 			}
 		}
 	}
-	isModified = true;
+	MarkModified();
 	// Sky layers are either null (uniform 15) or known non-uniform here. Only
 	// the other layers still need a uniform check.
 	for (auto& sub : subChunks) {
@@ -241,7 +250,7 @@ void Chunk::FillRegion(Int3 _a, Int3 _b, BlockType _type, uint8_t _meta) {
 		const int y1 = std::min<int>(hi.y, base + SUB_CHUNK_SIZE - 1) - base;
 		subChunks[size_t(sub)].FillRegion({ lo.x, y0, lo.z }, { hi.x, y1, hi.z }, _type, _meta);
 	}
-	isModified = true;
+	MarkModified();
 }
 
 void Chunk::FillBlockLightRegion(Int3 _a, Int3 _b, uint8_t _val) {
@@ -264,7 +273,7 @@ void Chunk::FillBlockLightRegion(Int3 _a, Int3 _b, uint8_t _val) {
 				for (int x = lo.x; x <= hi.x; x++)
 					s.SetBlockLight(SubChunk::LocalIndex({ x, y, z }), _val);
 	}
-	isModified = true;
+	MarkModified();
 }
 
 bool SubChunk::CompactBlocks() {

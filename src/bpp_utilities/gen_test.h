@@ -145,6 +145,7 @@ inline std::optional<double> GenerateFinishedWorld(WorldManager& _world, int _ra
 			auto chunk = std::make_shared<Chunk>();
 			chunk->cpos = pos;
 			_world.chunks.emplace(pos, std::move(chunk));
+			_world.AttachChunk(*_world.chunks[pos]);
 		}
 	}
 

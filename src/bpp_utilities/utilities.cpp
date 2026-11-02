@@ -135,7 +135,9 @@ bool convertAlphaLevel(std::string& _dir) {
 		_chunk->entityTags.clear();
 		_chunk->entityTags.shrink_to_fit();
 
-		_world.chunks[_chunk->cpos] = std::move(_chunk);
+		const Int32_2 pos = _chunk->cpos;
+		_world.chunks[pos] = std::move(_chunk);
+		_world.AttachChunk(*_world.chunks[pos]);
 	};
 
 	auto loadAlphaChunk = [&](FileHandle& _cFile) -> std::shared_ptr<Chunk> {
@@ -540,6 +542,7 @@ bool convertBetrockServerLevel(std::string& _dir) {
 			chunk->cpos = { cpos.x, cpos.z };
 			chunk->refreshLighting = true;
 			world.chunks[chunk->cpos] = chunk;
+			world.AttachChunk(*chunk);
 
 			if (count % 256 == 0) {
 				world.SaveChunks(true);
@@ -580,6 +583,7 @@ bool convertBetrockServerLevel(std::string& _dir) {
 			chunk->cpos = { cpos.x, cpos.z };
 			chunk->refreshLighting = true;
 			world.chunks[chunk->cpos] = chunk;
+			world.AttachChunk(*chunk);
 
 			if (count % 256 == 0) {
 				world.SaveChunks(true);

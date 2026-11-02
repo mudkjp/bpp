@@ -20,7 +20,7 @@ void TileEntityPistonMoving::Tick(WorldManager& _world) {
 		NudgePushedObjects(_world, 1.0f, 0.25f);
 		_world.RemoveTileEntity(this->position);
 		if (this->chunk)
-			chunk->isModified = true;
+			chunk->MarkModified();
 
 		if (_world.GetBlockId(this->position) == BLOCK_PISTON_MOVING) {
 			_world.SetBlock(this->position, this->storedBlock, this->storedMeta);
@@ -79,7 +79,7 @@ void TileEntityPistonMoving::InstantFinish(WorldManager& _world) {
 	_world.RemoveTileEntity(this->position);
 
 	if (this->chunk)
-		chunk->isModified = true;
+		chunk->MarkModified();
 
 	if (_world.GetBlockId(this->position) == BLOCK_PISTON_MOVING) {
 		_world.SetBlock(this->position, this->storedBlock, this->storedMeta);

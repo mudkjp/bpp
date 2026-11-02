@@ -102,7 +102,7 @@ void TileEntityFurnace::Tick(WorldManager& _world) {
 	}
 
 	if (chunk && inventory.isModified) {
-		chunk->isModified = true;
+		chunk->MarkModified();
 		inventory.isModified = false;
 	}
 }

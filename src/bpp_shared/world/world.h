@@ -78,6 +78,9 @@ private:
 	// Positions currently in ChunkState::Loading. DrainLoadQueue only has to
 	// visit in-flight loads instead of scanning every chunk in the world.
 	std::unordered_set<Int32_2> loadingChunks;
+	// Positions whose chunk has unsaved changes. Maintained by
+	// Chunk::MarkModified so SaveChunks is O(dirty) instead of O(chunks).
+	std::unordered_set<Int32_2> dirtyChunks;
 	// Cached random-tick candidate positions. Rebuilt only when a player's
 	// chunk or the simulation radius changes; chunk state is filtered per tick
 	// so newly populated chunks start ticking without a rebuild.
@@ -430,6 +433,29 @@ public:
 	}
 	size_t PendingLoadingCount() const {
 		return loadingChunks.size();
+	}
+	size_t DirtyChunkCount() const {
+		return dirtyChunks.size();
+	}
+	void MarkChunkDirty(Int32_2 _pos) {
+		dirtyChunks.insert(_pos);
+	}
+	// Binds a chunk to this world and registers it for saving if it is already
+	// dirty (generated chunks and chunks needing a lighting refresh).
+	void AttachChunk(Chunk& _chunk) {
+		_chunk.worldOwner = this;
+		if (_chunk.isModified)
+			dirtyChunks.insert(_chunk.cpos);
+	}
+	void RebuildDirtyChunks() {
+		dirtyChunks.clear();
+		for (const auto& [pos, chunk] : chunks) {
+			if (!chunk)
+				continue;
+			chunk->worldOwner = this;
+			if (chunk->isModified)
+				dirtyChunks.insert(pos);
+		}
 	}
 	size_t PopulateFrontierCount() const {
 		return populateFrontier.size();
