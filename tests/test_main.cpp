@@ -1615,6 +1615,39 @@ void TestUnlightEarlyOut() {
 	CHECK_EQ(int(center->GetSkyLight({ 8, 64, 8 })), 0);
 }
 
+void TestRandomTickCache() {
+	WorldManager world;
+	world.SetViewRadius(4); // simulation radius 4 => 9x9 candidate square
+
+	std::vector<ClientPosition> players(1);
+	players[0].pos = { 8.0, 64.0, 8.0 }; // chunk (0, 0)
+	world.PerformRandomTicks(players);
+	CHECK_EQ(world.RandomTickCandidateCount(), size_t(81));
+	CHECK_EQ(world.RandomTickRebuildCount(), size_t(1));
+
+	// Stationary players reuse the cached set.
+	world.PerformRandomTicks(players);
+	CHECK_EQ(world.RandomTickCandidateCount(), size_t(81));
+	CHECK_EQ(world.RandomTickRebuildCount(), size_t(1));
+
+	// Changing the player's chunk rebuilds it.
+	players[0].pos.x = 40.0; // chunk (2, 0)
+	world.PerformRandomTicks(players);
+	CHECK_EQ(world.RandomTickRebuildCount(), size_t(2));
+
+	// A second, partially overlapping player is deduplicated.
+	players.push_back(ClientPosition{ .pos = { 136.0, 64.0, 8.0 } }); // chunk (8, 0)
+	world.PerformRandomTicks(players);
+	CHECK_EQ(world.RandomTickRebuildCount(), size_t(3));
+	CHECK_EQ(world.RandomTickCandidateCount(), size_t(135));
+
+	// A simulation radius change also rebuilds.
+	world.SetViewRadius(3);
+	world.PerformRandomTicks(players);
+	CHECK_EQ(world.RandomTickRebuildCount(), size_t(4));
+	CHECK_EQ(world.RandomTickCandidateCount(), size_t(91));
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1827,6 +1860,7 @@ std::vector<TestCase> Tests() {
 		{ "populate_frontier", TestPopulateFrontier },
 		{ "chunk_light_emitters", TestChunkLightEmitters },
 		{ "unlight_early_out", TestUnlightEarlyOut },
+		{ "random_tick_cache", TestRandomTickCache },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "collision_shape_storage", TestCollisionShapeStorage },
 		{ "entity_index", TestEntityIndex },
@@ -2362,6 +2396,12 @@ void RunBenchmarks() {
 	std::vector<ClientPosition> randomTickPlayers(1);
 	randomTickPlayers[0].pos = { 8.0, 65.0, 8.0 };
 	Bench("random_ticks_441_chunks", 0, [&] {
+		randomTickWorld.PerformRandomTicks(randomTickPlayers);
+		return randomTickWorld.chunks.size();
+	});
+	int randomTickMove = 0;
+	Bench("random_ticks_441_moving", 0, [&] {
+		randomTickPlayers[0].pos.x = (randomTickMove++ & 1) ? 8.0 : 24.0;
 		randomTickWorld.PerformRandomTicks(randomTickPlayers);
 		return randomTickWorld.chunks.size();
 	});
