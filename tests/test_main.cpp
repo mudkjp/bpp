@@ -2285,6 +2285,44 @@ void TestRecipeEmptyGrid() {
 	CHECK_EQ(hit.second.id, ItemId(3));
 }
 
+void TestFindTopSolidBlock() {
+	WorldManager world;
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 0, 0 };
+	chunk->state.store(ChunkState::Generated);
+	chunk->FillSlices(0, 63, BLOCK_STONE);
+	// Transparent solids above the opacity height map must still be found.
+	chunk->SetBlockRaw({ 2, 80, 2 }, BLOCK_GLASS);
+	chunk->SetBlockRaw({ 3, 90, 3 }, BLOCK_ICE);
+	chunk->SetBlockRaw({ 4, 70, 4 }, BLOCK_WATER_STILL);
+	chunk->SetBlockRaw({ 5, 100, 5 }, BLOCK_SNOW_LAYER);
+	chunk->SetBlockRaw({ 6, 64, 6 }, BLOCK_TALLGRASS);
+	chunk->GenerateHeightMap();
+	world.chunks[Int32_2{ 0, 0 }] = chunk;
+
+	auto reference = [&](int _wx, int _wz) {
+		for (int y = CHUNK_HEIGHT - 1; y > 0; --y) {
+			const BlockType block = world.GetBlockId({ _wx, y, _wz });
+			if (block == BLOCK_AIR)
+				continue;
+			const auto& mat = Blocks::blockProperties[block].material;
+			if (mat.isSolid || mat.isLiquid)
+				return y + 1;
+		}
+		return -1;
+	};
+
+	for (int x = 0; x < CHUNK_WIDTH; ++x) {
+		for (int z = 0; z < CHUNK_WIDTH; ++z) {
+			const int expected = reference(x, z);
+			CHECK_EQ(world.FindTopSolidBlock(x, z), expected);
+		}
+	}
+
+	// Missing chunks still report -1.
+	CHECK_EQ(world.FindTopSolidBlock(1000, 1000), -1);
+}
+
 void TestLightPropagationEarlyOut() {
 	WorldManager world;
 	auto chunk = std::make_shared<Chunk>();
@@ -2393,6 +2431,12 @@ void TestPendingWriteServesNewest() {
 	regions.SaveChunk(chunk);
 	regions.FlushAll();
 
+	// Climate is baked on generated chunks, so the pending snapshot must carry
+	// the biome map along with the block storage.
+	chunk->climateBaked = true;
+	chunk->biomes.Set(0, uint8_t(BIOME_RAINFOREST));
+	chunk->biomes.Set(16 * 3 + 5, uint8_t(BIOME_DESERT));
+
 	// Newer edits live only in the pending snapshot until the next pump/flush.
 	chunk->SetBlockRaw({ 1, 0, 0 }, BLOCK_DIRT);
 	chunk->SetBlockRaw({ 2, 0, 0 }, BLOCK_GLASS);
@@ -2406,6 +2450,9 @@ void TestPendingWriteServesNewest() {
 		CHECK_EQ(int(loaded->GetBlock({ 1, 0, 0 })), int(BLOCK_DIRT));
 		CHECK_EQ(int(loaded->GetBlock({ 2, 0, 0 })), int(BLOCK_GLASS));
 		CHECK(!loaded->isModified);
+		CHECK(loaded->climateBaked);
+		CHECK_EQ(int(loaded->biomes.Get(0)), int(BIOME_RAINFOREST));
+		CHECK_EQ(int(loaded->biomes.Get(16 * 3 + 5)), int(BIOME_DESERT));
 	}
 
 	// The same data must be on disk once the write is flushed.
@@ -2750,6 +2797,7 @@ std::vector<TestCase> Tests() {
 		{ "region_write_ordering", TestRegionWriteOrdering },
 		{ "map_column_data", TestMapColumnData },
 		{ "recipe_empty_grid", TestRecipeEmptyGrid },
+		{ "find_top_solid_block", TestFindTopSolidBlock },
 		{ "container_mirror_sync", TestContainerMirrorSync },
 		{ "player_save_queue", TestPlayerSaveQueue },
 		{ "command_parsing", TestCommandParsing },
@@ -3056,6 +3104,33 @@ void RunBenchmarks() {
 		Map::BuildMarkerData(mapIconPacket.data, mapIconMarker);
 		mapIconPacket.Serialize(mapIconStream);
 		return mapIconStream.GetRawWriteBuffer().size();
+	});
+
+	WorldManager topSolidWorld;
+	for (int cx = -10; cx <= 10; ++cx) {
+		for (int cz = -10; cz <= 10; ++cz) {
+			auto chunk = std::make_shared<Chunk>();
+			chunk->cpos = { cx, cz };
+			chunk->state.store(ChunkState::Generated);
+			chunk->FillSlices(0, 63, BLOCK_STONE);
+			chunk->GenerateHeightMap();
+			topSolidWorld.chunks[Int32_2{ cx, cz }] = std::move(chunk);
+		}
+	}
+	Bench("find_top_solid_441_columns", 0, [&] {
+		size_t total = 0;
+		for (int cx = -10; cx <= 10; ++cx) {
+			for (int cz = -10; cz <= 10; ++cz) {
+				for (int lx = 0; lx < CHUNK_WIDTH; lx += 5) {
+					for (int lz = 0; lz < CHUNK_WIDTH; lz += 5) {
+						const int top = topSolidWorld.FindTopSolidBlock(cx * CHUNK_WIDTH + lx,
+						                                               cz * CHUNK_WIDTH + lz);
+						total += size_t(top < 0 ? 0 : top);
+					}
+				}
+			}
+		}
+		return total;
 	});
 
 	WorldManager lightBorderWorld;
