@@ -101,7 +101,7 @@ struct ChatMessage : BasePacket {
 	}
 
 	void Deserialize(NetworkStream& _stream) override {
-		message = _stream.ReadString16();
+		_stream.ReadString16Into(message);
 	}
 };
 

@@ -25,6 +25,7 @@
 #include "packet_utils.h"
 #include "server.h"
 #include "tile_entities/tile_entity.h"
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -57,9 +58,16 @@ void ChatMessage(Packet::ChatMessage& _pkt, PlayerSession& _session,
 	if (!_session.entity)
 		return;
 
-	// Vanilla caps chat at 100 characters
+	// Vanilla caps chat at 100 characters. A pure-ASCII message with at most
+	// 100 bytes cannot exceed that, so it never needs the allocating UCS-2
+	// conversion just to check the limit.
 	constexpr size_t K_MAX_CHAT_LENGTH = 100;
-	if (_pkt.message.size() > K_MAX_CHAT_LENGTH * 3 || ToUCS2(_pkt.message).size() > K_MAX_CHAT_LENGTH) {
+	const bool shortAscii =
+	    _pkt.message.size() <= K_MAX_CHAT_LENGTH &&
+	    std::all_of(_pkt.message.begin(), _pkt.message.end(),
+	                [](unsigned char _c) { return _c < 0x80; });
+	if (_pkt.message.size() > K_MAX_CHAT_LENGTH * 3 ||
+	    (!shortAscii && ToUCS2(_pkt.message).size() > K_MAX_CHAT_LENGTH)) {
 		_server.DisconnectPlayer("Chat message too long!", _session);
 		return;
 	}

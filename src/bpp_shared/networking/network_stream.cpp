@@ -162,6 +162,37 @@ std::string NetworkStream::ReadString16() {
 	return result;
 }
 
+void NetworkStream::ReadString16Into(std::string& _out) {
+	_out.clear();
+	uint16_t len = Read<uint16_t>();
+	const size_t bytes = size_t(len) * sizeof(char16_t);
+	if (readBuffer.size() - readPos < bytes) {
+		shortRead = true;
+		return;
+	}
+
+	const uint8_t* src = readBuffer.data() + readPos;
+	readPos += bytes;
+
+	// Worst case is three UTF-8 bytes per UCS-2 code unit. reserve() is a
+	// no-op when a previously decoded packet already grew the buffer, which is
+	// the point of reusing the string.
+	_out.reserve(std::max(_out.capacity(), size_t(len) * 3));
+	for (uint16_t i = 0; i < len; i++) {
+		const char16_t c = static_cast<char16_t>((uint16_t(src[i * 2]) << 8) | uint16_t(src[i * 2 + 1]));
+		if (c <= 0x7F) {
+			_out.push_back(static_cast<char>(c));
+		} else if (c <= 0x7FF) {
+			_out.push_back(static_cast<char>(0xC0 | (c >> 6)));
+			_out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+		} else {
+			_out.push_back(static_cast<char>(0xE0 | (c >> 12)));
+			_out.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
+			_out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+		}
+	}
+}
+
 size_t NetworkStream::ReadBytes(uint8_t* _buf, size_t _len) {
 	size_t available = readBuffer.size() - readPos;
 

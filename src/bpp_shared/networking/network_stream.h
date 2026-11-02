@@ -94,6 +94,9 @@ public:
 
 	// String-16 Read-Write
 	std::string ReadString16();
+	// Decodes a UCS-2 string into an existing buffer, reusing its capacity.
+	// Clears the buffer first; on a short read it is left empty.
+	void ReadString16Into(std::string& _out);
 	void WriteString16(const std::string& _str);
 
 	// Copies up to _len bytes out of the internal read buffer.

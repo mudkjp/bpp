@@ -33,13 +33,19 @@ bool PacketDispatcher::Dispatch(PacketId _packetId, PlayerSession& _session, Wor
 	case PacketId::KeepAlive:
 		Handle<Packet::KeepAlive>(_session, [&](auto& pkt) { HandlePacket::KeepAlive(pkt, _session); });
 		break;
-	case PacketId::ChatMessage:
-		Handle<Packet::ChatMessage>(_session, [&](auto& pkt) {
+	case PacketId::ChatMessage: {
+		// Chat arrives constantly. Reuse one decoded packet so the message
+		// string keeps its capacity between messages instead of allocating a
+		// fresh buffer for every line of chat.
+		thread_local Packet::ChatMessage pkt;
+		pkt.Deserialize(_session.stream);
+		if (!_session.stream.IsShortRead()) {
 			HandlePacket::ChatMessage(
 			    pkt, _session, _server.players, _sessionWorld, _server.commandManager, [](PlayerSession&) {},
 			    _server);
-		});
+		}
 		break;
+	}
 	case PacketId::SetTime: {
 		Packet::SetTime pkt;
 		pkt.Deserialize(_session.stream);
