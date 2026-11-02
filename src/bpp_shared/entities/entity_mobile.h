@@ -91,7 +91,7 @@ public:
 	virtual bool CanSpawnAt() {
 		if (!world)
 			return false;
-		bool clearOfEntities = entityManager->GetEntitiesWithinAabb(this->collider).size() == 0;
+		bool clearOfEntities = !entityManager->AnyEntityWithinAabb(this->collider);
 		bool clearOfBlocks = world->GetCollidingBoundingBoxes(this->collider).size() == 0;
 		bool clearOfLiquid = !world->IsLiquidInAabb(this->collider);
 		return clearOfBlocks && clearOfEntities && clearOfLiquid;

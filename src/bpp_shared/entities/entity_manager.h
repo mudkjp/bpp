@@ -42,12 +42,19 @@ struct EntityManager {
 
 	// For quick collider lookups
 	std::vector<Entity*> GetCollidablesWithinAabb(const AABB& _box, EntityId _excludedId = -1);
+	void GetCollidablesWithinAabb(const AABB& _box, EntityId _excludedId, std::vector<Entity*>& _out);
 
 	std::vector<Entity*> GetEntitiesWithinAabbExcluding(const AABB& _box, const EntityId _entityId);
+	void GetEntitiesWithinAabbExcluding(const AABB& _box, EntityId _entityId, std::vector<Entity*>& _out);
 	std::vector<Entity*> GetEntitiesWithinAabb(const AABB& _box);
+	void GetEntitiesWithinAabb(const AABB& _box, std::vector<Entity*>& _out);
+	bool AnyEntityWithinAabb(const AABB& _box);
 	std::vector<Entity*> GetEntitiesWithinAabbOfType(const AABB& _box, EntityType& _type);
+	void GetEntitiesWithinAabbOfType(const AABB& _box, EntityType& _type, std::vector<Entity*>& _out);
 	std::vector<Entity*> GetEntitiesWithinAabbExcludingTypes(const AABB& _box,
 	                                                         const std::vector<EntityType>& _excludedTypes);
+	void GetEntitiesWithinAabbExcludingTypes(const AABB& _box, const std::vector<EntityType>& _excludedTypes,
+	                                         std::vector<Entity*>& _out);
 	std::vector<Tag> CollectEntitiesForSave(Int2 _cpos, bool _clearCollectedEntities = false);
 	std::optional<std::string> GetEntityNbtId(EntityType _type);
 	void Tick(TickProfiler* _profiler = nullptr);
@@ -167,5 +174,6 @@ public:
 
 	std::shared_ptr<PlayerEntity> GetPlayerWithName(std::string _name);
 	std::vector<Entity*> GetLivingEntitiesWithinAabb(const AABB& _box);
+	void GetLivingEntitiesWithinAabb(const AABB& _box, std::vector<Entity*>& _out);
 	void AlertWolves(PlayerEntity& _player, Entity& _target, bool _ignoreSitting = false);
 };

@@ -32,7 +32,74 @@
 #include "gamerules.h"
 #include "world.h"
 #include "username.h"
+#include <algorithm>
 #include <unordered_set>
+
+namespace {
+
+template <typename Filter>
+void CollectEntitiesInAabb(std::unordered_map<Int2, EntityContainer>& _containers, const AABB& _box,
+                           bool _collidables, std::vector<Entity*>& _out, Filter&& _filter) {
+	_out.clear();
+	const int blockMinX = MathHelper::FloorDouble((_box.minX - 2.0) / 16.0);
+	const int blockMinZ = MathHelper::FloorDouble((_box.minZ - 2.0) / 16.0);
+	const int blockMaxX = MathHelper::FloorDouble((_box.maxX + 2.0) / 16.0);
+	const int blockMaxZ = MathHelper::FloorDouble((_box.maxZ + 2.0) / 16.0);
+	int bucketMinY = MathHelper::FloorDouble((_box.minY - 2.0) / 16.0);
+	int bucketMaxY = MathHelper::FloorDouble((_box.maxY + 2.0) / 16.0);
+	bucketMinY = std::clamp(bucketMinY, 0, 9);
+	bucketMaxY = std::clamp(bucketMaxY, 0, 9);
+
+	for (int x = blockMinX; x <= blockMaxX; ++x) {
+		for (int z = blockMinZ; z <= blockMaxZ; ++z) {
+			auto it = _containers.find({ x, z });
+			if (it == _containers.end())
+				continue;
+			auto& container = it->second;
+			for (int by = bucketMinY; by <= bucketMaxY; ++by) {
+				auto& list = _collidables ? container.buckets[by].worldCollidableEntities
+				                          : container.buckets[by].entities;
+				for (Entity* entity : list) {
+					if (_filter(*entity) && entity->collider.Intersects(_box))
+						_out.push_back(entity);
+				}
+			}
+		}
+	}
+}
+
+template <typename Filter>
+bool AnyEntityInAabb(std::unordered_map<Int2, EntityContainer>& _containers, const AABB& _box,
+                     bool _collidables, Filter&& _filter) {
+	const int blockMinX = MathHelper::FloorDouble((_box.minX - 2.0) / 16.0);
+	const int blockMinZ = MathHelper::FloorDouble((_box.minZ - 2.0) / 16.0);
+	const int blockMaxX = MathHelper::FloorDouble((_box.maxX + 2.0) / 16.0);
+	const int blockMaxZ = MathHelper::FloorDouble((_box.maxZ + 2.0) / 16.0);
+	int bucketMinY = MathHelper::FloorDouble((_box.minY - 2.0) / 16.0);
+	int bucketMaxY = MathHelper::FloorDouble((_box.maxY + 2.0) / 16.0);
+	bucketMinY = std::clamp(bucketMinY, 0, 9);
+	bucketMaxY = std::clamp(bucketMaxY, 0, 9);
+
+	for (int x = blockMinX; x <= blockMaxX; ++x) {
+		for (int z = blockMinZ; z <= blockMaxZ; ++z) {
+			auto it = _containers.find({ x, z });
+			if (it == _containers.end())
+				continue;
+			auto& container = it->second;
+			for (int by = bucketMinY; by <= bucketMaxY; ++by) {
+				auto& list = _collidables ? container.buckets[by].worldCollidableEntities
+				                          : container.buckets[by].entities;
+				for (Entity* entity : list) {
+					if (_filter(*entity) && entity->collider.Intersects(_box))
+						return true;
+				}
+			}
+		}
+	}
+	return false;
+}
+
+} // namespace
 
 std::shared_ptr<PlayerEntity> EntityManager::GetPlayerWithName(std::string _name) {
 	for (const auto& playerWeak : players) {
@@ -273,122 +340,79 @@ void EntityManager::Tick(TickProfiler* _profiler) {
 }
 
 std::vector<Entity*> EntityManager::GetEntitiesWithinAabbExcluding(const AABB& _box, const EntityId _entityId) {
-	// Get all entities within an AABB excluding this entity id
-	auto entitiesInAABB = GetEntitiesWithinAabb(_box);
-	entitiesInAABB.erase(std::remove_if(entitiesInAABB.begin(), entitiesInAABB.end(),
-	                                    [_entityId](Entity* _entity) { return _entity->id == _entityId; }),
-	                     entitiesInAABB.end());
-	return entitiesInAABB;
+	std::vector<Entity*> out;
+	GetEntitiesWithinAabbExcluding(_box, _entityId, out);
+	return out;
 }
 
-std::vector<Entity*> EntityManager::GetEntitiesWithinAabbExcludingTypes(const AABB& _box,
-                                                                        const std::vector<EntityType>& _excludedTypes) {
-	std::vector<Entity*> exclusiveEntities;
-	auto entitiesInAABB = GetEntitiesWithinAabb(_box);
-	for (auto& entity : entitiesInAABB) {
-		if (std::find(_excludedTypes.begin(), _excludedTypes.end(), entity->type) == _excludedTypes.end()) {
-			exclusiveEntities.push_back(entity);
-		}
-	}
-	return exclusiveEntities;
+void EntityManager::GetEntitiesWithinAabbExcluding(const AABB& _box, EntityId _entityId,
+                                                   std::vector<Entity*>& _out) {
+	CollectEntitiesInAabb(entityContainers, _box, false, _out,
+	                      [&](const Entity& _entity) { return _entity.id != _entityId; });
+}
+
+std::vector<Entity*> EntityManager::GetEntitiesWithinAabbExcludingTypes(
+    const AABB& _box, const std::vector<EntityType>& _excludedTypes) {
+	std::vector<Entity*> out;
+	GetEntitiesWithinAabbExcludingTypes(_box, _excludedTypes, out);
+	return out;
+}
+
+void EntityManager::GetEntitiesWithinAabbExcludingTypes(const AABB& _box,
+                                                        const std::vector<EntityType>& _excludedTypes,
+                                                        std::vector<Entity*>& _out) {
+	CollectEntitiesInAabb(entityContainers, _box, false, _out, [&](const Entity& _entity) {
+		return std::find(_excludedTypes.begin(), _excludedTypes.end(), _entity.type) == _excludedTypes.end();
+	});
 }
 
 std::vector<Entity*> EntityManager::GetCollidablesWithinAabb(const AABB& _box, EntityId _excludedId) {
-	// Get all entities within an AABB
-	std::vector<Entity*> collidingEntities;
+	std::vector<Entity*> out;
+	GetCollidablesWithinAabb(_box, _excludedId, out);
+	return out;
+}
 
-	// Normalize to block coordinates
-	int blockMinX = MathHelper::FloorDouble((_box.minX - 2.0) / 16.0);
-	int blockMinZ = MathHelper::FloorDouble((_box.minZ - 2.0) / 16.0);
-	int blockMaxX = MathHelper::FloorDouble((_box.maxX + 2.0) / 16.0);
-	int blockMaxZ = MathHelper::FloorDouble((_box.maxZ + 2.0) / 16.0);
-
-	// Get our start and end bucket
-	int bucketMinY = MathHelper::FloorDouble((_box.minY - 2.0) / 16.0);
-	int bucketMaxY = MathHelper::FloorDouble((_box.maxY + 2.0) / 16.0);
-	bucketMinY = std::max(0, bucketMinY);
-	bucketMinY = std::min(9, bucketMinY);
-	bucketMaxY = std::max(0, bucketMaxY);
-	bucketMaxY = std::min(9, bucketMaxY);
-
-	// Go through each block position
-	for (int x = blockMinX; x <= blockMaxX; x++) {
-		for (int z = blockMinZ; z <= blockMaxZ; z++) {
-			auto it = entityContainers.find({ x, z });
-			if (it == entityContainers.end())
-				continue;
-			auto& container = it->second;
-			for (int by = bucketMinY; by <= bucketMaxY; by++) {
-				// Get every entity within every bucket
-				for (size_t i = 0; i < container.buckets[by].worldCollidableEntities.size(); i++) {
-					auto& entityPtr = container.buckets[by].worldCollidableEntities[i];
-					if (entityPtr->collider.Intersects(_box) && entityPtr->id != _excludedId)
-						collidingEntities.push_back(entityPtr);
-				}
-			}
-		}
-	}
-	return collidingEntities;
+void EntityManager::GetCollidablesWithinAabb(const AABB& _box, EntityId _excludedId,
+                                             std::vector<Entity*>& _out) {
+	CollectEntitiesInAabb(entityContainers, _box, true, _out,
+	                      [&](const Entity& _entity) { return _entity.id != _excludedId; });
 }
 
 std::vector<Entity*> EntityManager::GetEntitiesWithinAabb(const AABB& _box) {
-	// Get all entities within an AABB
-	std::vector<Entity*> collidingEntities;
+	std::vector<Entity*> out;
+	GetEntitiesWithinAabb(_box, out);
+	return out;
+}
 
-	// Normalize to block coordinates
-	int blockMinX = MathHelper::FloorDouble((_box.minX - 2.0) / 16.0);
-	int blockMinZ = MathHelper::FloorDouble((_box.minZ - 2.0) / 16.0);
-	int blockMaxX = MathHelper::FloorDouble((_box.maxX + 2.0) / 16.0);
-	int blockMaxZ = MathHelper::FloorDouble((_box.maxZ + 2.0) / 16.0);
+void EntityManager::GetEntitiesWithinAabb(const AABB& _box, std::vector<Entity*>& _out) {
+	CollectEntitiesInAabb(entityContainers, _box, false, _out, [](const Entity&) { return true; });
+}
 
-	// Get our start and end bucket
-	int bucketMinY = MathHelper::FloorDouble((_box.minY - 2.0) / 16.0);
-	int bucketMaxY = MathHelper::FloorDouble((_box.maxY + 2.0) / 16.0);
-	bucketMinY = std::max(0, bucketMinY);
-	bucketMinY = std::min(9, bucketMinY);
-	bucketMaxY = std::max(0, bucketMaxY);
-	bucketMaxY = std::min(9, bucketMaxY);
-
-	// Go through each block position
-	for (int x = blockMinX; x <= blockMaxX; x++) {
-		for (int z = blockMinZ; z <= blockMaxZ; z++) {
-			auto it = entityContainers.find({ x, z });
-			if (it == entityContainers.end())
-				continue;
-			auto& container = it->second;
-			for (int by = bucketMinY; by <= bucketMaxY; by++) {
-				// Get every entity within every bucket
-				for (size_t i = 0; i < container.buckets[by].entities.size(); i++) {
-					// Make sure the weak ptr is still valid
-					auto& entityPtr = container.buckets[by].entities[i];
-					if (entityPtr->collider.Intersects(_box))
-						collidingEntities.push_back(entityPtr);
-				}
-			}
-		}
-	}
-	return collidingEntities;
+bool EntityManager::AnyEntityWithinAabb(const AABB& _box) {
+	return AnyEntityInAabb(entityContainers, _box, false, [](const Entity&) { return true; });
 }
 
 std::vector<Entity*> EntityManager::GetEntitiesWithinAabbOfType(const AABB& _box, EntityType& _type) {
-	auto e = GetEntitiesWithinAabb(_box);
-	std::vector<Entity*> typedEntities;
+	std::vector<Entity*> out;
+	GetEntitiesWithinAabbOfType(_box, _type, out);
+	return out;
+}
 
-	for (auto& entity : e) {
-		if (entity->type == _type)
-			typedEntities.push_back(entity);
-	}
-	return typedEntities;
+void EntityManager::GetEntitiesWithinAabbOfType(const AABB& _box, EntityType& _type,
+                                                std::vector<Entity*>& _out) {
+	CollectEntitiesInAabb(entityContainers, _box, false, _out,
+	                      [&](const Entity& _entity) { return _entity.type == _type; });
 }
 
 std::vector<Entity*> EntityManager::GetLivingEntitiesWithinAabb(const AABB& _box) {
-	auto entitiesInAabb = GetEntitiesWithinAabb(_box);
-	std::vector<Entity*> living;
-	for (auto& entity : entitiesInAabb) {
-		if (dynamic_cast<MobileEntity*>(entity))
-			living.push_back(entity);
-	}
-	return living;
+	std::vector<Entity*> out;
+	GetLivingEntitiesWithinAabb(_box, out);
+	return out;
+}
+
+void EntityManager::GetLivingEntitiesWithinAabb(const AABB& _box, std::vector<Entity*>& _out) {
+	CollectEntitiesInAabb(entityContainers, _box, false, _out,
+	                      [](const Entity& _entity) { return dynamic_cast<const MobileEntity*>(&_entity) != nullptr; });
 }
 
 void EntityManager::CreateEntityFromNbt(Tag& _nbt) {

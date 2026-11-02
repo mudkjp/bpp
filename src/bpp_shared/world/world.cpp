@@ -360,11 +360,13 @@ std::vector<AABB> WorldManager::GetCollidingBoundingBoxes(const AABB& _area, Ent
 
 	// Collect entities in this area, excluding the mover itself
 	AABB entitySearchArea = { double(minX), double(minY), double(minZ), double(maxX), double(maxY), double(maxZ) };
-	std::vector<Entity*> entitiesInArea;
+	thread_local std::vector<Entity*> entitiesInArea;
+	entitiesInArea.clear();
 
-	entitiesInArea = needsFullEntityScan
-	                     ? entityManager.GetEntitiesWithinAabbExcluding(entitySearchArea, _mover->id)
-	                     : entityManager.GetCollidablesWithinAabb(entitySearchArea, _mover ? _mover->id : EntityId(-1));
+	if (needsFullEntityScan)
+		entityManager.GetEntitiesWithinAabbExcluding(entitySearchArea, _mover->id, entitiesInArea);
+	else
+		entityManager.GetCollidablesWithinAabb(entitySearchArea, _mover ? _mover->id : EntityId(-1), entitiesInArea);
 
 	for (auto& entity : entitiesInArea) {
 		if (entity->actsAsWorldCollider && entity->collider.Intersects(_area))

@@ -527,8 +527,9 @@ void EntityMPPlayer::Tick() {
 
 	// Tell entities we collided with a player
 	if (entityManager) {
-		auto entitiesCollidingWith = entityManager->GetEntitiesWithinAabbExcluding(collider.Expand(1.0, 0.0, 1.0),
-		                                                                           this->id);
+		thread_local std::vector<Entity*> entitiesCollidingWith;
+		entityManager->GetEntitiesWithinAabbExcluding(collider.Expand(1.0, 0.0, 1.0), this->id,
+		                                              entitiesCollidingWith);
 		for (const auto& entity : entitiesCollidingWith) {
 			if (!entity->isDead)
 				entity->OnCollideWithPlayer(*this);

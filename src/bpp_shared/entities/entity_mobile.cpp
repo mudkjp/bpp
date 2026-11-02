@@ -257,7 +257,8 @@ void MobileEntity::TickPhysics() {
 }
 
 void MobileEntity::ResolveEntityPushes() {
-	auto collidingEntities = world->entityManager.GetEntitiesWithinAabbExcluding(collider.Expand(0.2, 0.0, 0.2), id);
+	thread_local std::vector<Entity*> collidingEntities;
+	world->entityManager.GetEntitiesWithinAabbExcluding(collider.Expand(0.2, 0.0, 0.2), id, collidingEntities);
 
 	for (const auto& entity : collidingEntities) {
 		if (!entity->CanBePushed())
