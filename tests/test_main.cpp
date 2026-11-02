@@ -677,6 +677,31 @@ void TestCollisionFastPath() {
 	}
 }
 
+void TestChunkCacheRolling() {
+	WorldManager world;
+	for (int x = -3; x <= 3; ++x) {
+		for (int z = -3; z <= 3; ++z) {
+			auto chunk = std::make_shared<Chunk>();
+			chunk->cpos = { x, z };
+			chunk->state.store(ChunkState::Generated);
+			world.chunks[Int32_2{ x, z }] = chunk;
+		}
+	}
+
+	ChunkCache cache;
+	const Int2 centers[] = { { 0, 0 }, { 1, 0 }, { 2, 0 }, { 1, 0 }, { 0, 0 }, { 0, 1 }, { 0, 2 },
+	                         { 0, 1 }, { 0, 0 }, { -1, -1 }, { 0, 0 } };
+	for (const auto& center : centers) {
+		cache.Refresh(center.x, center.y, world);
+		for (int dx = -1; dx <= 1; ++dx) {
+			for (int dz = -1; dz <= 1; ++dz) {
+				CHECK_EQ(cache.Get(center.x + dx, center.y + dz),
+				         world.GetChunkRaw({ center.x + dx, center.y + dz }));
+			}
+		}
+	}
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -804,6 +829,7 @@ std::vector<TestCase> Tests() {
 		{ "chunk_serializer_fixture", TestChunkSerializerFixture },
 		{ "skylight_map", TestSkylightMap },
 		{ "light_border_noop", TestLightBorderNoOpScheduling },
+		{ "chunk_cache_rolling", TestChunkCacheRolling },
 		{ "chunk_light_emitters", TestChunkLightEmitters },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "region_fixture", TestRegionFixture },
