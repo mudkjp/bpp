@@ -667,11 +667,21 @@ void EntityTracker::Update(TrackedEntry& _trackedEntry) {
 	auto& entity = _trackedEntry.entity;
 
 	// If we are a mobile entity then send our equipment
-	// TODO: Only send these if any of them have been updated
 	if (_trackedEntry.isMobile) {
-		FlushEventQueue(*entity, _trackedEntry.isPlayer);
-		UpdateEquipmentState(_trackedEntry);
-		UpdateMetadataState(_trackedEntry);
+		auto* mobile = static_cast<MobileEntity*>(entity);
+		if (!entity->pendingEvents.empty()) {
+			++eventFlushCalls;
+			FlushEventQueue(*entity, _trackedEntry.isPlayer);
+		}
+		if (_trackedEntry.lastEquipmentRevision != mobile->equipmentRevision) {
+			ShouldUpdateEquipment(_trackedEntry, *mobile);
+			++equipmentUpdateCalls;
+			UpdateEquipmentState(_trackedEntry);
+		}
+		if (entity->wasMetadataUpdated) {
+			++metadataUpdateCalls;
+			UpdateMetadataState(_trackedEntry);
+		}
 	}
 
 	// Dirty flag gets checked every Tick

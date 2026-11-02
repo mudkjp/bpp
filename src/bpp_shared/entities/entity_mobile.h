@@ -36,6 +36,9 @@ public:
 	bool beenAttacked : 1 = false;
 	ItemStack heldItem;
 	ItemStack* armor[4] = { nullptr, nullptr, nullptr, nullptr }; // Helmet, chestplate, leggings, boots
+	// Bumped whenever tracked equipment changes, so the entity tracker can
+	// skip the five-slot comparison on ticks where nothing changed.
+	uint32_t equipmentRevision = 0;
 
 	// Footstep stuff
 	float distanceWalkedModified = 0.0f;

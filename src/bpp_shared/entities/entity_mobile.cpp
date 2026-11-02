@@ -497,5 +497,7 @@ ItemStack* MobileEntity::GetHeldItem() {
 }
 
 void MobileEntity::SetHeldItem(ItemStack _stack) {
+	if (heldItem != _stack)
+		++equipmentRevision;
 	heldItem = _stack;
 }

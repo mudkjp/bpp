@@ -9,12 +9,14 @@
 #include "base_types.h"
 #include "entities.h"
 #include "entities/entity_manager.h"
+#include "entities/entity_mobile.h"
 #include "inventory/item_stack.h"
 #include "logger.h"
 #include "networking/network_stream.h"
 #include "networking/packets.h"
 #include "world/world.h"
 #include <cstdio>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -48,6 +50,7 @@ struct TrackedEntry {
 	int32_t lastEncodedPitch = 0;
 	int updateCounter = 0;
 	int ticksSinceTeleport = 0;
+	uint32_t lastEquipmentRevision = UINT32_MAX;
 	bool isMobile = false;
 	bool isPlayer = false;
 	std::unordered_set<EntityId> visibleTo; // what player ids can see this entity
@@ -63,6 +66,11 @@ struct EntityTracker {
 
 	std::unordered_map<EntityId, TrackedEntry> trackedEntities;
 	std::unordered_set<EntityId> playerIds;
+
+	// Diagnostics used by tests and profiling.
+	size_t equipmentUpdateCalls = 0;
+	size_t metadataUpdateCalls = 0;
+	size_t eventFlushCalls = 0;
 
 	TickTime forceTeleportTicks = 400; // 20 seconds
 	Java::Random rand;
@@ -100,6 +108,12 @@ struct EntityTracker {
 	void SendPacketToAllPlayers(Packet::BasePacket& _pkt);
 	TrackedEntry* GetTrackerForEntityId(EntityId _id);
 	void Update(TrackedEntry& _trackedEntry);
+	static bool ShouldUpdateEquipment(TrackedEntry& _entry, MobileEntity& _entity) {
+		if (_entry.lastEquipmentRevision == _entity.equipmentRevision)
+			return false;
+		_entry.lastEquipmentRevision = _entity.equipmentRevision;
+		return true;
+	}
 	void FlushEventQueue(Entity& _entity, bool _isPlayer);
 	void UpdateMetadataState(TrackedEntry& _trackedEntry);
 	void SendMetadataState(TrackedEntry& _trackedEntry, std::shared_ptr<PlayerSession> _targetSession);

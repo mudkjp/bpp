@@ -491,10 +491,20 @@ void EntityMPPlayer::Tick() {
 	// Slots 5 -> 8 are for armor
 	ItemStack none = {};
 	auto heldItemPtr = session->inventory.GetHeldItem();
-	this->heldItem = session->inventory.GetHeldItem() ? *heldItemPtr : none;
+	const ItemStack newHeldItem = heldItemPtr ? *heldItemPtr : none;
+	if (this->heldItem != newHeldItem) {
+		this->heldItem = newHeldItem;
+		++equipmentRevision;
+	}
 	for (int i = 0; i < 4; i++) {
-		auto armorSlotPtr = session->inventory.GetStackInSlot(5 + i);
-		this->armor[i] = armorSlotPtr ? armorSlotPtr : nullptr;
+		auto* newArmor = session->inventory.GetStackInSlot(5 + i);
+		ItemStack* oldArmor = this->armor[i];
+		bool changed = (oldArmor == nullptr) != (newArmor == nullptr);
+		if (!changed && oldArmor && newArmor)
+			changed = *oldArmor != *newArmor;
+		this->armor[i] = newArmor;
+		if (changed)
+			++equipmentRevision;
 	}
 
 	// Do living entity stuff
