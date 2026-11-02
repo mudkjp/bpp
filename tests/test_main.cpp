@@ -19,6 +19,7 @@
 #include "chunk_broadcaster.h"
 #include "chunk_sender.h"
 #include "chunk_serializer.h"
+#include "commands/strategos.h"
 #include "config/config.h"
 #include "crafting/recipe_manager.h"
 #include "entities/entity_mobile.h"
@@ -1390,6 +1391,98 @@ void TestLoadingChunkIndex() {
 	regions.Release();
 }
 
+void TestCommandParsing() {
+	struct ParsedResult {
+		bool called = false;
+		strategos::Vec3 pos{};
+		std::string first;
+		std::string second;
+		int number = 0;
+	};
+
+	strategos::BrigadierContext dispatcher;
+	auto allow = [](void*) { return true; };
+
+	dispatcher.add_command(
+	    strategos::Node::literal("tp")
+	        .op()
+	        .then(strategos::Node::vec3("pos").executes([](const strategos::CmdNode& _cmd, void* _ud) {
+		        auto* out = static_cast<ParsedResult*>(_ud);
+		        out->called = true;
+		        if (auto pos = _cmd.get_arg<strategos::Vec3>("pos"))
+			        out->pos = *pos;
+		        return std::string{};
+	        }))
+	        .then(strategos::Node::string("player")
+	                  .then(strategos::Node::vec3("pos").executes([](const strategos::CmdNode& _cmd, void* _ud) {
+		                  auto* out = static_cast<ParsedResult*>(_ud);
+		                  out->called = true;
+		                  out->first = _cmd.get_arg<std::string>("player").value_or("");
+		                  if (auto pos = _cmd.get_arg<strategos::Vec3>("pos"))
+			                  out->pos = *pos;
+		                  return std::string{};
+	                  }))
+	                  .then(strategos::Node::string("target").executes([](const strategos::CmdNode& _cmd, void* _ud) {
+		                  auto* out = static_cast<ParsedResult*>(_ud);
+		                  out->called = true;
+		                  out->first = _cmd.get_arg<std::string>("player").value_or("");
+		                  out->second = _cmd.get_arg<std::string>("target").value_or("");
+		                  return std::string{};
+	                  }))));
+	dispatcher.add_command(strategos::Node::literal("num").then(
+	    strategos::Node::integer("n", 0, 10).executes([](const strategos::CmdNode& _cmd, void* _ud) {
+		    auto* out = static_cast<ParsedResult*>(_ud);
+		    out->called = true;
+		    out->number = _cmd.get_arg<int>("n").value_or(-1);
+		    return std::string{};
+	    })));
+
+	ParsedResult coords;
+	auto coordResult = dispatcher.execute("tp 1.5 64 ~-2", &coords, allow);
+	CHECK(coordResult.has_value());
+	CHECK(coords.called);
+	CHECK_EQ(coords.pos.pos[0], 1.5f);
+	CHECK_EQ(coords.pos.pos[1], 64.0f);
+	CHECK_EQ(coords.pos.pos[2], -2.0f);
+	CHECK(coords.pos.is_relative(strategos::Axis::Z));
+	CHECK(!coords.pos.is_relative(strategos::Axis::X));
+
+	ParsedResult named;
+	auto namedResult = dispatcher.execute("tp Alice Bob", &named, allow);
+	CHECK(namedResult.has_value());
+	CHECK(named.called);
+	CHECK_EQ(named.first, std::string("Alice"));
+	CHECK_EQ(named.second, std::string("Bob"));
+
+	ParsedResult mixed;
+	auto mixedResult = dispatcher.execute("tp Alice 1 2 3", &mixed, allow);
+	CHECK(mixedResult.has_value());
+	CHECK(mixed.called);
+	CHECK_EQ(mixed.first, std::string("Alice"));
+	CHECK_EQ(mixed.pos.pos[0], 1.0f);
+	CHECK_EQ(mixed.pos.pos[1], 2.0f);
+	CHECK_EQ(mixed.pos.pos[2], 3.0f);
+
+	ParsedResult number;
+	auto numberResult = dispatcher.execute("num +7", &number, allow);
+	CHECK(numberResult.has_value());
+	CHECK_EQ(number.number, 7);
+
+	number.called = false;
+	auto outOfRange = dispatcher.execute("num 11", &number, allow);
+	CHECK(!outOfRange.has_value());
+	CHECK_EQ(int(outOfRange.error().error), int(strategos::ParseError::InvalidToken));
+	CHECK(!number.called);
+
+	auto unknown = dispatcher.execute("num abc", &number, allow);
+	CHECK(!unknown.has_value());
+	CHECK_EQ(int(unknown.error().error), int(strategos::ParseError::UnknownCommand));
+
+	auto incomplete = dispatcher.execute("tp", &number, allow);
+	CHECK(!incomplete.has_value());
+	CHECK_EQ(int(incomplete.error().error), int(strategos::ParseError::IncompleteCommand));
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1627,6 +1720,7 @@ std::vector<TestCase> Tests() {
 		{ "region_overwrite_reuses_sectors", TestRegionOverwriteReusesSectors },
 		{ "region_manager_save_queue", TestRegionManagerSaveQueue },
 		{ "recipe_mirror", TestRecipeMirror },
+		{ "command_parsing", TestCommandParsing },
 		{ "config_fixture", TestConfigFixture },
 		{ "string16_into_reuse", TestString16IntoReuse },
 		{ "packet_round_trips", TestPacketRoundTrips },
@@ -1759,6 +1853,29 @@ void RunBenchmarks() {
 	Bench("pathfinder_flat", 0, [&] {
 		auto path = pathfinder.FindPath({ 2, 4, 2 }, { 13, 4, 13 }, 0.6f, 1.8f, 20.0f);
 		return path.size();
+	});
+
+	strategos::BrigadierContext commandTree;
+	auto commandNoop = [](const strategos::CmdNode&, void*) -> std::string { return {}; };
+	commandTree.add_command(
+	    strategos::Node::literal("tp")
+	        .op()
+	        .then(strategos::Node::vec3("pos").executes(commandNoop))
+	        .then(strategos::Node::string("player")
+	                  .then(strategos::Node::vec3("pos").executes(commandNoop))
+	                  .then(strategos::Node::string("target").executes(commandNoop))));
+	auto commandAllow = [](void*) { return true; };
+	Bench("command_parse_tp_coords", 0, [&] {
+		auto result = commandTree.execute("tp 12.5 64 -7.25", nullptr, commandAllow);
+		return result.has_value() ? result->size() : size_t(0);
+	});
+	Bench("command_parse_tp_named", 0, [&] {
+		auto result = commandTree.execute("tp Alice Bob", nullptr, commandAllow);
+		return result.has_value() ? result->size() : size_t(0);
+	});
+	Bench("command_parse_tp_mixed", 0, [&] {
+		auto result = commandTree.execute("tp Alice 1 2 3", nullptr, commandAllow);
+		return result.has_value() ? result->size() : size_t(0);
 	});
 
 	EntityTracker benchTracker;
