@@ -2111,6 +2111,55 @@ void TestDirtyChunkIndex() {
 	regions.Release();
 }
 
+void TestLightPropagationEarlyOut() {
+	WorldManager world;
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 0, 0 };
+	chunk->state.store(ChunkState::Generated);
+	world.chunks[Int32_2{ 0, 0 }] = chunk;
+
+	// Every cell holds light 1; decay leaves 0 everywhere.
+	for (auto& sub : chunk->subChunks)
+		sub.FillBlockLight(1);
+	world.lightManager.ScheduleLightRegion({ 0, 0, 0 }, { 15, CHUNK_HEIGHT - 1, 15 }, LightType::Block);
+	world.lightManager.ProcessLightQueue(world, INT_MAX);
+	CHECK_EQ(world.lightManager.PendingLightUpdates(), size_t(0));
+	CHECK_EQ(int(chunk->GetBlockLight({ 0, 0, 0 })), 0);
+	CHECK_EQ(int(chunk->GetBlockLight({ 8, 64, 8 })), 0);
+	CHECK_EQ(int(chunk->GetBlockLight({ 15, 127, 15 })), 0);
+
+	// Full-strength emitters still light their neighbours.
+	for (auto& sub : chunk->subChunks)
+		sub.FillBlockLight(0);
+	chunk->SetBlockRaw({ 8, 64, 8 }, BLOCK_GLOWSTONE);
+	world.lightManager.ScheduleLightUpdate({ 8, 64, 8 }, LightType::Block);
+	world.lightManager.ProcessLightQueue(world, INT_MAX);
+	CHECK_EQ(int(chunk->GetBlockLight({ 8, 64, 8 })), 15);
+	CHECK_EQ(int(chunk->GetBlockLight({ 9, 64, 8 })), 14);
+}
+
+void TestUnlightLavaPool() {
+	WorldManager world;
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 0, 0 };
+	chunk->state.store(ChunkState::Generated);
+	world.chunks[Int32_2{ 0, 0 }] = chunk;
+
+	// A connected pool at 14 with a brighter centre: removing the centre
+	// unlights the whole connected volume.
+	for (auto& sub : chunk->subChunks)
+		sub.FillBlockLight(14);
+	chunk->subChunks[4].SetBlockLight(SubChunk::LocalIndex({ 8, 64, 8 }), 15);
+	world.lightManager.UnlightAt(8, 64, 8, LightType::Block, world, chunk.get());
+	world.lightManager.ProcessLightQueue(world, INT_MAX);
+	// The removed centre stays dark; its neighbours are unlit and then
+	// re-lit from the surrounding 14-valued pool.
+	CHECK(int(chunk->GetBlockLight({ 8, 64, 8 })) < 15);
+	CHECK_EQ(int(chunk->GetBlockLight({ 0, 64, 0 })), 14);
+	CHECK_EQ(int(chunk->GetBlockLight({ 15, 96, 15 })), 14);
+	CHECK_EQ(world.lightManager.PendingLightUpdates(), size_t(0));
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -2331,6 +2380,8 @@ std::vector<TestCase> Tests() {
 		{ "seed_lighting_height_grid", TestSeedLightingHeightGrid },
 		{ "light_queue_budget", TestLightQueueBudget },
 		{ "light_queue_budget_convergence", TestLightQueueBudgetConvergence },
+		{ "light_propagation_early_out", TestLightPropagationEarlyOut },
+		{ "unlight_lava_pool", TestUnlightLavaPool },
 		{ "command_literal_index", TestCommandLiteralIndex },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "collision_shape_storage", TestCollisionShapeStorage },
@@ -2485,6 +2536,34 @@ void RunBenchmarks() {
 	Bench("chunk_skylight_map", CHUNK_VOLUME, [&] {
 		skylit.GenerateSkylightMap();
 		return size_t(skylit.GetSkyLight({ 8, 64, 8 }));
+	});
+
+	WorldManager lowLightWorld;
+	auto lowLightChunk = std::make_shared<Chunk>();
+	lowLightChunk->cpos = { 0, 0 };
+	lowLightChunk->state.store(ChunkState::Generated);
+	lowLightWorld.chunks[Int32_2{ 0, 0 }] = lowLightChunk;
+	Bench("light_low_value_relight", 0, [&] {
+		for (auto& sub : lowLightChunk->subChunks)
+			sub.FillBlockLight(1);
+		lowLightWorld.lightManager.ScheduleLightRegion({ 0, 0, 0 }, { 15, CHUNK_HEIGHT - 1, 15 },
+		                                               LightType::Block);
+		lowLightWorld.lightManager.ProcessLightQueue(lowLightWorld, INT_MAX);
+		return size_t(lowLightChunk->GetBlockLight({ 8, 64, 8 }));
+	});
+
+	WorldManager lavaWorld;
+	auto lavaChunk = std::make_shared<Chunk>();
+	lavaChunk->cpos = { 0, 0 };
+	lavaChunk->state.store(ChunkState::Generated);
+	lavaWorld.chunks[Int32_2{ 0, 0 }] = lavaChunk;
+	Bench("unlight_lava_pool", 0, [&] {
+		for (auto& sub : lavaChunk->subChunks)
+			sub.FillBlockLight(14);
+		lavaChunk->subChunks[4].SetBlockLight(SubChunk::LocalIndex({ 8, 64, 8 }), 15);
+		lavaWorld.lightManager.UnlightAt(8, 64, 8, LightType::Block, lavaWorld, lavaChunk.get());
+		lavaWorld.lightManager.ProcessLightQueue(lavaWorld, INT_MAX);
+		return size_t(lavaChunk->GetBlockLight({ 8, 64, 8 }));
 	});
 
 	WorldManager lightQueueWorld;
