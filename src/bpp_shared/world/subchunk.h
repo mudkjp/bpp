@@ -74,23 +74,29 @@ struct SubChunk {
 		}
 		meta->Set(_idx, _val);
 	}
-	inline void SetBlockLight(int _idx, uint8_t _val) {
+	inline bool SetBlockLight(int _idx, uint8_t _val) {
 		_val &= 0x0Fu;
 		if (!blockLight) {
 			if (_val == blockLightFill)
-				return;
+				return false;
 			AllocBlockLight();
+		} else if (blockLight->Get(_idx) == _val) {
+			return false;
 		}
 		blockLight->Set(_idx, _val);
+		return true;
 	}
-	inline void SetSkyLight(int _idx, uint8_t _val) {
+	inline bool SetSkyLight(int _idx, uint8_t _val) {
 		_val &= 0x0Fu;
 		if (!skyLight) {
 			if (_val == skyLightFill)
-				return;
+				return false;
 			AllocSkyLight();
+		} else if (skyLight->Get(_idx) == _val) {
+			return false;
 		}
 		skyLight->Set(_idx, _val);
+		return true;
 	}
 	// Sets every voxel in the slice, releasing that layer's storage
 	inline void FillBlocks(BlockType _val) {

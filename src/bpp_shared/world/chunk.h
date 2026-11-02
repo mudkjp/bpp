@@ -167,17 +167,21 @@ struct Chunk {
 		SetMetaRaw(_pos, _meta);
 		isModified = true;
 	}
-	inline void SetBlockLight(Int3 _pos, uint8_t _val) {
+	inline bool SetBlockLight(Int3 _pos, uint8_t _val) {
 		if (!InBounds(_pos.y))
-			return;
-		subChunks[size_t(_pos.y >> 4)].SetBlockLight(SubChunk::LocalIndex(_pos), _val);
-		isModified = true;
+			return false;
+		const bool changed = subChunks[size_t(_pos.y >> 4)].SetBlockLight(SubChunk::LocalIndex(_pos), _val);
+		if (changed)
+			isModified = true;
+		return changed;
 	}
-	inline void SetSkyLight(Int3 _pos, uint8_t _val) {
+	inline bool SetSkyLight(Int3 _pos, uint8_t _val) {
 		if (!InBounds(_pos.y))
-			return;
-		subChunks[size_t(_pos.y >> 4)].SetSkyLight(SubChunk::LocalIndex(_pos), _val);
-		isModified = true;
+			return false;
+		const bool changed = subChunks[size_t(_pos.y >> 4)].SetSkyLight(SubChunk::LocalIndex(_pos), _val);
+		if (changed)
+			isModified = true;
+		return changed;
 	}
 	// Getters
 	inline BlockType GetBlock(Int3 _pos) const {
@@ -243,7 +247,9 @@ struct Chunk {
 	void GenerateHeightMap();
 	void GenerateHeightMapColumn(Int2 _pos);
 	void GenerateSkylightMap();
-	void RelightColumn(Int2 _pos);
+	// Fills sky light 15 in [fromY, toY) on a column whose height map is
+	// already up to date. Only the interval that changed height needs this.
+	void RelightColumn(Int2 _pos, int _fromY, int _toY);
 	void Clear();
 
 	// Compacts each layer of slice _index (blocks, meta, block light, sky light) on its own, freeing

@@ -1285,8 +1285,11 @@ void WorldManager::SetBlock(const Int3 _wpos, const BlockType _blockType, const 
 
 	// Placing opaque block; heightmap may rise
 	if (changesLighting) {
-		chunk->RelightColumn(localXz);
+		chunk->GenerateHeightMapColumn(localXz);
 		int newHeight = chunk->GetHeightValue(localXz);
+		// Only air that used to be below the old surface needs sky 15.
+		if (newHeight < oldHeight)
+			chunk->RelightColumn(localXz, newHeight, oldHeight);
 		if (newHeight > oldHeight) {
 			// Notify the BFS that all blocks from y down to oldHeight need updating
 			for (int sy = oldHeight; sy <= newHeight; ++sy) {

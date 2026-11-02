@@ -91,11 +91,10 @@ void Chunk::GenerateSkylightMap() {
 	}
 }
 
-void Chunk::RelightColumn(Int2 _pos) {
-	GenerateHeightMapColumn(_pos);
-	int height = GetHeightValue(_pos);
-
-	for (int y = CHUNK_HEIGHT - 1; y >= height; y--)
+void Chunk::RelightColumn(Int2 _pos, int _fromY, int _toY) {
+	const int from = std::max(0, _fromY);
+	const int to = std::min<int>(CHUNK_HEIGHT, _toY);
+	for (int y = to - 1; y >= from; --y)
 		SetSkyLight({ _pos.x, y, _pos.z }, 15);
 }
 
