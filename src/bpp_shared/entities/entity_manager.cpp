@@ -37,6 +37,60 @@
 
 namespace {
 
+void AddToBucket(Entity* _entity, EntityBucket& _bucket) {
+	_entity->bucketEntityIndex = static_cast<int>(_bucket.entities.size());
+	_bucket.entities.push_back(_entity);
+	if (_entity->actsAsWorldCollider) {
+		_entity->bucketColliderIndex = static_cast<int>(_bucket.worldCollidableEntities.size());
+		_bucket.worldCollidableEntities.push_back(_entity);
+	} else {
+		_entity->bucketColliderIndex = -1;
+	}
+}
+
+void RemoveFromBucket(Entity* _entity, EntityBucket& _bucket) {
+	const size_t index = size_t(std::max(_entity->bucketEntityIndex, 0));
+	if (_entity->bucketEntityIndex >= 0 && index < _bucket.entities.size() &&
+	    _bucket.entities[index] == _entity) {
+		Entity* moved = _bucket.entities.back();
+		_bucket.entities[index] = moved;
+		_bucket.entities.pop_back();
+		moved->bucketEntityIndex = static_cast<int>(index);
+	} else {
+		auto it = std::find(_bucket.entities.begin(), _bucket.entities.end(), _entity);
+		if (it != _bucket.entities.end()) {
+			const size_t pos = size_t(it - _bucket.entities.begin());
+			Entity* moved = _bucket.entities.back();
+			*it = moved;
+			_bucket.entities.pop_back();
+			moved->bucketEntityIndex = static_cast<int>(pos);
+		}
+	}
+	_entity->bucketEntityIndex = -1;
+
+	if (_entity->actsAsWorldCollider) {
+		const size_t colliderIndex = size_t(std::max(_entity->bucketColliderIndex, 0));
+		if (_entity->bucketColliderIndex >= 0 && colliderIndex < _bucket.worldCollidableEntities.size() &&
+		    _bucket.worldCollidableEntities[colliderIndex] == _entity) {
+			Entity* moved = _bucket.worldCollidableEntities.back();
+			_bucket.worldCollidableEntities[colliderIndex] = moved;
+			_bucket.worldCollidableEntities.pop_back();
+			moved->bucketColliderIndex = static_cast<int>(colliderIndex);
+		} else {
+			auto it = std::find(_bucket.worldCollidableEntities.begin(), _bucket.worldCollidableEntities.end(),
+			                    _entity);
+			if (it != _bucket.worldCollidableEntities.end()) {
+				const size_t pos = size_t(it - _bucket.worldCollidableEntities.begin());
+				Entity* moved = _bucket.worldCollidableEntities.back();
+				*it = moved;
+				_bucket.worldCollidableEntities.pop_back();
+				moved->bucketColliderIndex = static_cast<int>(pos);
+			}
+		}
+	}
+	_entity->bucketColliderIndex = -1;
+}
+
 template <typename Filter>
 void CollectEntitiesInAabb(std::unordered_map<Int2, EntityContainer>& _containers, const AABB& _box,
                            bool _collidables, std::vector<Entity*>& _out, Filter&& _filter) {
@@ -201,14 +255,11 @@ void EntityManager::DetachEntity(const std::shared_ptr<Entity>& entity) {
 	auto containerIt = entityContainers.find(cpos);
 	if (containerIt != entityContainers.end()) {
 		auto& bucket = containerIt->second.buckets[entity->bucketPos.z];
-		bucket.entities.erase(std::remove_if(bucket.entities.begin(), bucket.entities.end(),
-		                                     [&entity](const Entity* _entity) { return _entity == entity.get(); }),
-		                      bucket.entities.end());
-		bucket.worldCollidableEntities.erase(
-		    std::remove_if(bucket.worldCollidableEntities.begin(), bucket.worldCollidableEntities.end(),
-		                   [&entity](const Entity* _entity) { return _entity == entity.get(); }),
-		    bucket.worldCollidableEntities.end());
+		RemoveFromBucket(entity.get(), bucket);
 		PruneEmptyContainer(cpos);
+	} else {
+		entity->bucketEntityIndex = -1;
+		entity->bucketColliderIndex = -1;
 	}
 
 	// Unbind ourselves
@@ -246,9 +297,7 @@ void EntityManager::AddEntity(std::shared_ptr<Entity> _entity, EntityId _forceEn
 	// Register the entity into its initial bucket
 	_entity->bucketPos = ComputeBucketPos(_entity->position);
 	auto& container = entityContainers[{ _entity->bucketPos.x, _entity->bucketPos.y }];
-	container.buckets[_entity->bucketPos.z].entities.push_back(_entity.get());
-	if (_entity->actsAsWorldCollider)
-		container.buckets[_entity->bucketPos.z].worldCollidableEntities.push_back(_entity.get());
+	AddToBucket(_entity.get(), container.buckets[_entity->bucketPos.z]);
 
 	// If we are a player register for easy lookup
 	if (_entity->type == EntityType::PLAYER) {
@@ -282,21 +331,13 @@ void EntityManager::TickEntityAndPassenger(const std::shared_ptr<Entity>& _entit
 			chunk->isModified = true;
 		auto& oldContainer = entityContainers[oldCpos];
 		auto& b = oldContainer.buckets[_entity->bucketPos.z];
-		b.entities.erase(std::remove_if(b.entities.begin(), b.entities.end(),
-		                                [&_entity](Entity* _ptr) { return _ptr == _entity.get(); }),
-		                 b.entities.end());
-		b.worldCollidableEntities.erase(std::remove_if(b.worldCollidableEntities.begin(),
-		                                               b.worldCollidableEntities.end(),
-		                                               [&_entity](Entity* _ptr) { return _ptr == _entity.get(); }),
-		                                b.worldCollidableEntities.end());
+		RemoveFromBucket(raw, b);
 		PruneEmptyContainer(oldCpos);
 
 		// Put in the new bucket
 		auto& newContainer = entityContainers[{ newBucketPos.x, newBucketPos.y }];
 		auto& newB = newContainer.buckets[newBucketPos.z];
-		newB.entities.push_back(raw);
-		if (_entity->actsAsWorldCollider)
-			newB.worldCollidableEntities.push_back(raw);
+		AddToBucket(raw, newB);
 		_entity->bucketPos = newBucketPos;
 	}
 

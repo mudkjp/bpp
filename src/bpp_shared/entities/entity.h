@@ -110,6 +110,9 @@ struct Entity {
 	// Collision
 	AABB collider;
 	Int3 bucketPos; // The bucket this entity is currently in (for spatial partitioning)
+	// Indexes into the current bucket's vectors, maintained by EntityManager.
+	int bucketEntityIndex = -1;
+	int bucketColliderIndex = -1;
 	Blocks::BlockProperties belowBlock;
 
 	// Width/height of the collision box in blocks.
