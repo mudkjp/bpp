@@ -234,6 +234,8 @@ private:
 	// Chunk-session index helpers
 	void IndexAddChunk(PlayerSession& _session, const Int32_2& _pos);
 	void IndexRemoveChunk(PlayerSession& _session, const Int32_2& _pos);
+	void IndexAddSentChunk(PlayerSession& _session, const Int32_2& _pos);
+	void IndexRemoveSentChunk(PlayerSession& _session, const Int32_2& _pos);
 	void IndexRemoveSession(PlayerSession& _session);
 
 	// Update our block breaking state
@@ -257,6 +259,8 @@ private:
 
 	// Which sessions currently have a given chunk loaded?
 	std::unordered_map<Int32_3, std::vector<PlayerSession*>> chunkSessions;
+	// Which sessions have a given chunk in flight (sent, possibly not flushed)?
+	std::unordered_map<Int32_3, std::vector<PlayerSession*>> sentChunkSessions;
 
 	bool lastSentRaining = false;
 

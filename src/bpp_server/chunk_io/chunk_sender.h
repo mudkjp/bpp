@@ -210,6 +210,7 @@ struct ChunkSender {
 			pc.data = packet->second;
 			queue.push_back(std::move(pc));
 			_session.sentChunks.insert(p);
+			_session.newlySent.push_back(p);
 			++submitted;
 		}
 		// Anything we didn't submit this tick must be retried on the next one,

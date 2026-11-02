@@ -80,6 +80,9 @@ struct PlayerSession {
 	// Chunks that were written to the stream during the last flush() call.
 	std::vector<Int32_2> newlyFlushed;
 
+	// Chunks added to sentChunks during the last enqueue() call.
+	std::vector<Int32_2> newlySent;
+
 	// Chunks that were unloaded during the last enqueue() call.
 	std::vector<Int32_2> newlyUnloaded;
 

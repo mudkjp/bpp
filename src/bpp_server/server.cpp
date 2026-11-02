@@ -124,6 +124,7 @@ void Server::ResetDimensionState(PlayerSession& _session, Dimension _dim) {
 	_session.sentChunks.clear();
 	_session.pendingBlockChanges.clear();
 	_session.newlyFlushed.clear();
+	_session.newlySent.clear();
 	_session.newlyUnloaded.clear();
 	_session.entityTracker = _dim == Dimension::Overworld ? &overworldEntityTracker : &hellEntityTracker;
 	chunkSender.inFlight.erase(&_session);
@@ -187,9 +188,29 @@ void Server::IndexRemoveChunk(PlayerSession& _session, const Int32_2& _pos) {
 		chunkSessions.erase(it);
 }
 
+void Server::IndexAddSentChunk(PlayerSession& _session, const Int32_2& _pos) {
+	auto& vec = sentChunkSessions[ChunkKey(_pos, _session.dimension)];
+	for (auto* p : vec)
+		if (p == &_session)
+			return;
+	vec.push_back(&_session);
+}
+
+void Server::IndexRemoveSentChunk(PlayerSession& _session, const Int32_2& _pos) {
+	auto it = sentChunkSessions.find(ChunkKey(_pos, _session.dimension));
+	if (it == sentChunkSessions.end())
+		return;
+	auto& vec = it->second;
+	vec.erase(std::remove(vec.begin(), vec.end(), &_session), vec.end());
+	if (vec.empty())
+		sentChunkSessions.erase(it);
+}
+
 void Server::IndexRemoveSession(PlayerSession& _session) {
 	for (const auto& pos : _session.flushedChunks)
 		IndexRemoveChunk(_session, pos);
+	for (const auto& pos : _session.sentChunks)
+		IndexRemoveSentChunk(_session, pos);
 }
 
 void Server::LoadConfig() {
@@ -818,11 +839,16 @@ void Server::Tick() {
 		connStateManager.HandleConnectionState(*session, *this);
 
 		// Drain chunk-session index updates that ChunkSender recorded
+		for (const auto& pos : session->newlySent)
+			IndexAddSentChunk(*session, pos);
+		session->newlySent.clear();
 		for (const auto& pos : session->newlyFlushed)
 			IndexAddChunk(*session, pos);
 		session->newlyFlushed.clear();
-		for (const auto& pos : session->newlyUnloaded)
+		for (const auto& pos : session->newlyUnloaded) {
 			IndexRemoveChunk(*session, pos);
+			IndexRemoveSentChunk(*session, pos);
+		}
 		session->newlyUnloaded.clear();
 	}
 	const bool advanceSimulation = !tickFrozen || pendingTickSteps > 0;

@@ -33,16 +33,18 @@ void ChunkBroadcaster::BroadcastBlockChanges(Server& _server,
 		// Sessions that have the chunk in-flight (sentChunks but not flushedChunks) still need to queue the updates.
 		auto& sentOnly = scratch.sentOnly;
 		sentOnly.clear();
-		for (auto& session : _server.players) {
-			if (session->connState != ConnectionState::Playing &&
-			    session->connState != ConnectionState::WaitingForSpawnChunks)
-				continue;
-			if (session->dimension != _dimension)
-				continue;
-			if (session->flushedChunks.contains(chunk))
-				continue; // already in flushedSessions
-			if (session->sentChunks.contains(chunk))
-				sentOnly.push_back(session.get());
+		auto sentIt = _server.sentChunkSessions.find(Server::ChunkKey(chunk, _dimension));
+		if (sentIt != _server.sentChunkSessions.end()) {
+			for (auto* session : sentIt->second) {
+				if (!session || (session->connState != ConnectionState::Playing &&
+				                 session->connState != ConnectionState::WaitingForSpawnChunks))
+					continue;
+				if (session->dimension != _dimension)
+					continue;
+				if (session->flushedChunks.contains(chunk) || !session->sentChunks.contains(chunk))
+					continue;
+				sentOnly.push_back(session);
+			}
 		}
 
 		// Queue updates for sessions still waiting on the chunk to flush.
