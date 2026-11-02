@@ -73,6 +73,7 @@ struct EntityTracker {
 	size_t metadataUpdateCalls = 0;
 	size_t eventFlushCalls = 0;
 	size_t spawnPairChecks = 0;
+	size_t staleVisibilityErases = 0;
 	bool spawnStateDirty = true;
 
 	TickTime forceTeleportTicks = 400; // 20 seconds

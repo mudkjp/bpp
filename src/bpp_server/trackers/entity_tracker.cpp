@@ -56,9 +56,7 @@ void EntityTracker::Tick() {
 	for (auto& entityId : deadThisTick) {
 		auto& entry = trackedEntities.at(entityId);
 		DespawnEntityForViewers(entityId, entry);
-		for (auto& [id, otherEntry] : trackedEntities) {
-			otherEntry.visibleTo.erase(entityId);
-		}
+		// Stale visibleTo ids are removed lazily by the despawn pass below.
 		trackedEntities.erase(entityId);
 		playerIds.erase(entityId);
 	}
@@ -81,6 +79,7 @@ void EntityTracker::Tick() {
 			EntityId playerId = *it;
 			auto playerIt = trackedEntities.find(playerId);
 			if (playerIt == trackedEntities.end()) {
+				++staleVisibilityErases;
 				it = entry.visibleTo.erase(it);
 				continue;
 			}
@@ -90,6 +89,7 @@ void EntityTracker::Tick() {
 			    entry.profile.range * entry.profile.range) {
 				auto pSession = server->GetSessionById(playerId);
 				if (!pSession) {
+					++staleVisibilityErases;
 					it = entry.visibleTo.erase(it);
 					continue;
 				}
@@ -170,10 +170,7 @@ void EntityTracker::UntrackEntity(Entity* _entity) {
 		return;
 
 	DespawnEntityForViewers(_entity->id, it->second);
-
-	for (auto& [id, otherEntry] : trackedEntities)
-		otherEntry.visibleTo.erase(_entity->id);
-
+	// Visible-to sets are cleaned lazily by Tick's despawn pass.
 	trackedEntities.erase(it);
 	playerIds.erase(_entity->id);
 }
