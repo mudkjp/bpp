@@ -19,6 +19,26 @@ int Chunk::GetHighestPoint() const {
 	return highestPoint;
 }
 
+int Chunk::FindTopSolidBlock(Int2 _pos) const {
+	for (int s = SUB_CHUNK_COUNT - 1; s >= 0; --s) {
+		const SubChunk& sub = subChunks[size_t(s)];
+		if (!sub.blocks) {
+			if (Blocks::solidOrLiquidTable[sub.blockFill])
+				return (s + 1) * SUB_CHUNK_SIZE;
+			continue;
+		}
+
+		// The original loop stopped at y > 0, so y = 0 is never reported.
+		for (int ly = SUB_CHUNK_SIZE - 1; ly >= (s == 0 ? 1 : 0); --ly) {
+			const int y = s * SUB_CHUNK_SIZE + ly;
+			const BlockType block = sub.blocks->types[size_t(SubChunk::LocalIndex({ _pos.x, y, _pos.z }))];
+			if (Blocks::solidOrLiquidTable[block])
+				return y + 1;
+		}
+	}
+	return -1;
+}
+
 bool Chunk::CanBlockSeeSky(Int3 _pos) const {
 	return _pos.y >= GetHeightValue({ _pos.x, _pos.z });
 }

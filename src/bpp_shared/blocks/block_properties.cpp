@@ -19,6 +19,7 @@ BlockProperties blockProperties[BLOCK_MAX] = {};
 uint8_t lightOpacityTable[BLOCK_MAX] = {};
 uint8_t lightEmissionTable[BLOCK_MAX] = {};
 uint8_t ticksOnLoadTable[BLOCK_MAX] = {};
+uint8_t solidOrLiquidTable[BLOCK_MAX] = {};
 
 // Behavior helper functions
 bool CanFallAt(WorldAccess& _world, Int3 _position) {
@@ -1158,6 +1159,8 @@ void RegisterBlockProperties() {
 		lightOpacityTable[i] = blockProperties[i].lightOpacity;
 		lightEmissionTable[i] = blockProperties[i].lightEmission;
 		ticksOnLoadTable[i] = blockProperties[i].ticksOnLoad ? 1 : 0;
+		solidOrLiquidTable[i] =
+		    (blockProperties[i].material.isSolid || blockProperties[i].material.isLiquid) ? 1 : 0;
 	}
 }
 

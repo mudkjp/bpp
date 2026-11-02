@@ -249,6 +249,9 @@ struct Chunk {
 	void RecalculateSkyLightColumn(Int2 _pos);
 
 	int GetHighestPoint() const;
+	// Highest y (exclusive) of a solid or liquid block in a column, or -1.
+	// Skips uniform sub-chunks without touching individual voxels.
+	int FindTopSolidBlock(Int2 _pos) const;
 	bool CanBlockSeeSky(Int3 _pos) const;
 	void GenerateHeightMap();
 	void GenerateHeightMapColumn(Int2 _pos);

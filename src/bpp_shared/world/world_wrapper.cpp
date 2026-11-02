@@ -46,16 +46,7 @@ int WorldWrapper::FindTopSolidBlock(const int _wx, const int _wz) {
 	auto chunk = chunkRegion.GetChunk(GetRegionChunkPos({ _wx, 0, _wz }));
 	if (!chunk || chunk->state.load() < ChunkState::Generated)
 		return -1;
-	int lx = _wx & 15, lz = _wz & 15;
-	for (int y = CHUNK_HEIGHT - 1; y > 0; --y) {
-		BlockType block = chunk->GetBlock({ lx, y, lz });
-		if (block == BlockType::BLOCK_AIR)
-			continue;
-		Material mat = Blocks::blockProperties[block].material;
-		if (mat.isSolid || mat.isLiquid)
-			return y + 1;
-	}
-	return -1;
+	return chunk->FindTopSolidBlock({ _wx & 15, _wz & 15 });
 }
 
 int WorldWrapper::GetHeightValue(const int _wx, const int _wz) {

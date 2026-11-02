@@ -76,6 +76,8 @@ extern BlockProperties blockProperties[BLOCK_MAX];
 extern uint8_t lightOpacityTable[BLOCK_MAX];
 extern uint8_t lightEmissionTable[BLOCK_MAX];
 extern uint8_t ticksOnLoadTable[BLOCK_MAX];
+// 1 when the block stops rain/light columns (solid or liquid).
+extern uint8_t solidOrLiquidTable[BLOCK_MAX];
 
 void RegisterBlockProperties();
 } // namespace Blocks
