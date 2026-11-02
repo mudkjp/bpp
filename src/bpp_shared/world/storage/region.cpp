@@ -243,7 +243,7 @@ std::shared_ptr<Chunk> Region::GetChunk(Int32_2 _cpos, ReadStatus& _status) {
 		Int2 local{ _cpos.x & 31, _cpos.z & 31 };
 		int index = local.x + local.z * 32;
 
-		if (!ChunkExists(local)) {
+		if (!ChunkExistsUnlocked(local)) {
 			_status = ReadStatus::Missing;
 			return nullptr;
 		}
@@ -288,6 +288,13 @@ std::shared_ptr<Chunk> Region::GetChunk(Int32_2 _cpos, ReadStatus& _status) {
 		}
 
 		// Read compressed data (length includes the format byte, so actual data is length-1)
+		const uint64_t payloadEnd = uint64_t(length) + 4; // length field + format byte + data
+		const uint64_t sectorBytes = uint64_t(regionHeader[index].numberOfSectors) * SECTOR_SIZE;
+		if (payloadEnd > sectorBytes || length > (64u << 20)) {
+			Logger::Warning << "Invalid chunk length: " << length << "\n";
+			_status = ReadStatus::Error;
+			return nullptr;
+		}
 		compressed.resize(length - 1);
 		file.read(reinterpret_cast<char*>(compressed.data()), length - 1);
 		if (file.fail()) {
@@ -513,7 +520,13 @@ std::shared_ptr<Chunk> Region::DecodeDecompressedNbtData(std::vector<uint8_t>& _
 	const auto& tileEntities = lvl.Get("TileEntities").GetList();
 
 	std::vector<Tag> emptyEntities;
-	std::vector<Tag>* entities = lvl.Has("Entities") ? &lvl.Get("Entities").list : &emptyEntities;
+	std::vector<Tag>* entities = &emptyEntities;
+	if (lvl.Has("Entities")) {
+		Tag& entitiesTag = lvl.Get("Entities");
+		if (entitiesTag.type != TAG_LIST)
+			throw std::runtime_error("Unexpected NBT type!");
+		entities = &entitiesTag.list;
+	}
 
 	// Setup our chunk
 	auto chunk = std::make_shared<Chunk>();

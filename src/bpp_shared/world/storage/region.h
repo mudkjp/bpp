@@ -60,9 +60,8 @@ public:
 	std::shared_ptr<Chunk> DecodeDecompressedNbtData(std::vector<uint8_t>& _decompressedData);
 
 	bool ChunkExists(Int2 _localcpos) {
-		int index = _localcpos.x + _localcpos.z * 32;
-		auto* rHeader = &regionHeader[index];
-		return (rHeader->numberOfSectors != 0 && rHeader->offset != 0);
+		std::lock_guard<std::mutex> lock(mutex);
+		return ChunkExistsUnlocked(_localcpos);
 	}
 
 	// Read our header data into the "regionHeader"
@@ -80,6 +79,12 @@ public:
 		}
 	}
 private:
+	bool ChunkExistsUnlocked(Int2 _localcpos) const {
+		int index = _localcpos.x + _localcpos.z * 32;
+		const auto* rHeader = &regionHeader[index];
+		return (rHeader->numberOfSectors != 0 && rHeader->offset != 0);
+	}
+
 	//std::array<std::shared_ptr<Chunk>, REGION_AREA> chunks;
 	std::string GetPath();
 	std::array<FileHeaderEntry, 1024> regionHeader;

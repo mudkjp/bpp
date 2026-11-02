@@ -138,10 +138,15 @@ public:
 		WriteBytes(_data, _len);
 	}
 
-	// Read-only view of the pending write buffer.
-	// Valid only until the next Write*/writeRaw/flushWriteBuffer call.
+	// Read-only view of the whole write buffer. For a live stream this may
+	// still contain bytes that were already sent; use GetPendingWriteBytes()
+	// for the number of bytes that still need to be flushed.
 	const std::vector<uint8_t>& GetRawWriteBuffer() const {
 		return writeBuffer;
+	}
+
+	size_t GetPendingWriteBytes() const {
+		return PendingWriteBytes();
 	}
 
 	// Returns true if the *most recent* ReadBytes()-family call came up
