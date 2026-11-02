@@ -20,6 +20,7 @@ Node* Pathfinder::OpenNode(Int3 _pos) {
 
 	if (inserted) {
 		it->second.pos = _pos;
+		it->second.h = _pos.Distance(searchGoal);
 	}
 
 	return &it->second;
@@ -104,7 +105,7 @@ std::optional<Int3> Pathfinder::GetSafePoint(Int3 _pos, int _stepUp) {
 // z+1, x-1, x+1, z-1
 const Int2 CARDINAL_DIRS[4] = { { 0, 1 }, { -1, 0 }, { 1, 0 }, { 0, -1 } };
 
-int Pathfinder::FindPathOptions(Int3 _current, Int3 _goal, float _maxDistance, Int3* _options) {
+int Pathfinder::FindPathOptions(Int3 _current, float _maxDistance, Node** _options) {
 	int count = 0;
 
 	// Stepping up a block is only allowed at all if there's headroom
@@ -113,6 +114,8 @@ int Pathfinder::FindPathOptions(Int3 _current, Int3 _goal, float _maxDistance, I
 	headroom.y += 1;
 	if (GetVerticalOffset(headroom) == ColumnResult::Open)
 		stepUp = 1;
+
+	const double maxDistanceSq = double(_maxDistance) * double(_maxDistance);
 
 	for (const auto& dir : CARDINAL_DIRS) {
 		Int3 candidatePos = _current;
@@ -123,14 +126,16 @@ int Pathfinder::FindPathOptions(Int3 _current, Int3 _goal, float _maxDistance, I
 		if (!safe)
 			continue;
 
-		auto it = nodes.find(*safe);
-		if (it != nodes.end() && it->second.closed)
+		if (safe->DistanceSquared(searchGoal) >= maxDistanceSq)
 			continue;
 
-		if (safe->Distance(_goal) >= _maxDistance)
+		// Create or fetch the node once here; the caller no longer has to
+		// hash the same position again during relaxation.
+		Node* next = OpenNode(*safe);
+		if (next->closed)
 			continue;
 
-		_options[count++] = *safe;
+		_options[count++] = next;
 	}
 
 	return count;
@@ -141,18 +146,19 @@ std::vector<Int3> Pathfinder::FindPath(Int3 _start, Int3 _goal, float _width, fl
 
 	footprint = { std::max(1, int(std::floor(_width + 1.0f))), std::max(1, int(std::floor(_height + 1.0f))),
 		          std::max(1, int(std::floor(_width + 1.0f))) };
+	searchGoal = _goal;
 
 	Node* startNode = OpenNode(_start);
 	startNode->g = 0.0f;
-	startNode->f = _start.Distance(_goal);
+	startNode->f = startNode->h;
 
 	open.push({ startNode->f, startNode });
 
 	// Tracks the closest to goal node seen so far
 	Node* bestNode = startNode;
-	float bestDistance = _start.Distance(_goal);
+	float bestDistance = startNode->h;
 
-	Int3 options[4];
+	Node* options[4];
 
 	while (!open.empty()) {
 		Node* current = open.top().node;
@@ -163,25 +169,24 @@ std::vector<Int3> Pathfinder::FindPath(Int3 _start, Int3 _goal, float _width, fl
 
 		current->closed = true;
 
-		float distToGoal = current->pos.Distance(_goal);
-		if (distToGoal < bestDistance) {
-			bestDistance = distToGoal;
+		if (current->h < bestDistance) {
+			bestDistance = current->h;
 			bestNode = current;
 		}
 
 		if (current->pos == _goal)
 			break;
 
-		int optionCount = FindPathOptions(current->pos, _goal, _maxDistance, options);
+		int optionCount = FindPathOptions(current->pos, _maxDistance, options);
 		for (int i = 0; i < optionCount; i++) {
-			Node* next = OpenNode(options[i]);
+			Node* next = options[i];
 			if (next->closed)
 				continue;
 
-			float g = current->g + current->pos.Distance(options[i]);
+			float g = current->g + current->pos.Distance(next->pos);
 			if (g < next->g) {
 				next->g = g;
-				next->f = g + options[i].Distance(_goal);
+				next->f = g + next->h;
 				next->parent = current;
 
 				open.push({ next->f, next });

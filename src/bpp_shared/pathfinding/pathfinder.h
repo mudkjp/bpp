@@ -20,6 +20,7 @@ struct Node {
 	Int3 pos;
 
 	float g = std::numeric_limits<float>::max();
+	float h = 0.0f;
 	float f = std::numeric_limits<float>::max();
 
 	bool closed = false;
@@ -59,6 +60,7 @@ private:
 	std::unordered_map<Int3, Node> nodes;
 
 	Int3 footprint{ 1, 2, 1 };
+	Int3 searchGoal{ 0, 0, 0 };
 
 	Node* OpenNode(Int3 _pos);
 	void Reset();
@@ -67,5 +69,5 @@ private:
 
 	std::optional<Int3> GetSafePoint(Int3 _pos, int _stepUp);
 
-	int FindPathOptions(Int3 _current, Int3 _goal, float _maxDistance, Int3* _options);
+	int FindPathOptions(Int3 _current, float _maxDistance, Node** _options);
 };
