@@ -580,6 +580,31 @@ std::shared_ptr<Chunk> Region::DecodeDecompressedNbtData(std::vector<uint8_t>& _
 					}
 				}
 			}
+		} else if (uniform.allBlocksValid) {
+			// All layers are non-uniform, but every block id is valid. Skip the
+			// validity checks and write the four layers directly.
+			for (int ly = 0; ly < SUB_CHUNK_SIZE; ly += 2) {
+				const int y = s * SUB_CHUNK_SIZE + ly;
+				for (int x = 0; x < CHUNK_WIDTH; x++) {
+					for (int z = 0; z < CHUNK_WIDTH; z++) {
+						const size_t idx = size_t(y + (z * CHUNK_HEIGHT) + (x * CHUNK_HEIGHT * CHUNK_WIDTH));
+						const int li = SubChunk::LocalIndex({ x, y, z });
+						const int liNext = li + SUB_CHUNK_SIZE * SUB_CHUNK_SIZE;
+						const uint8_t packedMeta = uint8_t(dataIn[idx / 2]);
+						const uint8_t packedBlockLight = uint8_t(blightIn[idx / 2]);
+						const uint8_t packedSkyLight = uint8_t(skyIn[idx / 2]);
+
+						sub.SetBlock(li, BlockType(blocksIn[idx]));
+						sub.SetBlock(liNext, BlockType(blocksIn[idx + 1]));
+						sub.SetMeta(li, packedMeta & 0x0F);
+						sub.SetMeta(liNext, packedMeta >> 4);
+						sub.SetBlockLight(li, packedBlockLight & 0x0F);
+						sub.SetBlockLight(liNext, packedBlockLight >> 4);
+						sub.SetSkyLight(li, packedSkyLight & 0x0F);
+						sub.SetSkyLight(liNext, packedSkyLight >> 4);
+					}
+				}
+			}
 		} else {
 			// Rare corrupt/invalid block ids: keep the exact per-voxel path,
 			// which leaves invalid voxels at their default fill values.
