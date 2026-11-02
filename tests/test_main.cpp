@@ -2263,6 +2263,60 @@ void TestPendingWriteServesNewest() {
 	regions.Release();
 }
 
+void TestUnlightBudgetConvergence() {
+	auto makeWorld = [](WorldManager& _world) {
+		auto chunk = std::make_shared<Chunk>();
+		chunk->cpos = { 0, 0 };
+		chunk->state.store(ChunkState::Generated);
+		_world.chunks[Int32_2{ 0, 0 }] = chunk;
+		for (int x = 0; x < CHUNK_WIDTH; ++x) {
+			for (int z = 0; z < CHUNK_WIDTH; ++z) {
+				for (int y = 0; y < CHUNK_HEIGHT; ++y) {
+					const int distance = std::abs(x - 8) + std::abs(y - 64) + std::abs(z - 8);
+					const uint8_t value = uint8_t(std::max(0, 15 - distance));
+					chunk->subChunks[size_t(y >> 4)].SetBlockLight(SubChunk::LocalIndex({ x, y, z }), value);
+				}
+			}
+		}
+	};
+	auto hashLight = [](WorldManager& _world) {
+		size_t hash = 1469598103934665603ULL;
+		for (auto& [pos, chunk] : _world.chunks) {
+			for (int x = 0; x < CHUNK_WIDTH; ++x)
+				for (int z = 0; z < CHUNK_WIDTH; ++z)
+					for (int y = 0; y < CHUNK_HEIGHT; ++y)
+						hash = (hash ^ size_t(chunk->GetBlockLight({ x, y, z }))) * 1099511628211ULL;
+		}
+		return hash;
+	};
+
+	WorldManager reference;
+	makeWorld(reference);
+	reference.lightManager.BeginUnlightTick(SIZE_MAX);
+	reference.lightManager.UnlightAt(8, 64, 8, LightType::Block, reference,
+	                                 reference.chunks[Int32_2{ 0, 0 }].get());
+	reference.lightManager.ProcessLightQueue(reference, INT_MAX);
+
+	WorldManager budgeted;
+	makeWorld(budgeted);
+	budgeted.lightManager.BeginUnlightTick(256);
+	budgeted.lightManager.UnlightAt(8, 64, 8, LightType::Block, budgeted,
+	                                budgeted.chunks[Int32_2{ 0, 0 }].get());
+	CHECK(budgeted.lightManager.HasPendingUnlight());
+
+	size_t ticks = 0;
+	while (budgeted.lightManager.HasPendingUnlight() && ticks < 1000) {
+		budgeted.lightManager.BeginUnlightTick(256);
+		budgeted.lightManager.ProcessUnlightQueue(budgeted);
+		++ticks;
+	}
+	CHECK(!budgeted.lightManager.HasPendingUnlight());
+	CHECK(ticks > 1);
+	budgeted.lightManager.BeginUnlightTick(SIZE_MAX);
+	budgeted.lightManager.ProcessLightQueue(budgeted, INT_MAX);
+	CHECK_EQ(hashLight(reference), hashLight(budgeted));
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -2487,6 +2541,7 @@ std::vector<TestCase> Tests() {
 		{ "unlight_lava_pool", TestUnlightLavaPool },
 		{ "window0_container_skip", TestWindow0ContainerSkip },
 		{ "pending_write_serves_newest", TestPendingWriteServesNewest },
+		{ "unlight_budget_convergence", TestUnlightBudgetConvergence },
 		{ "command_literal_index", TestCommandLiteralIndex },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "collision_shape_storage", TestCollisionShapeStorage },
@@ -2642,6 +2697,42 @@ void RunBenchmarks() {
 		skylit.GenerateSkylightMap();
 		return size_t(skylit.GetSkyLight({ 8, 64, 8 }));
 	});
+
+	WorldManager unlightBudgetWorld;
+	auto unlightBudgetChunk = std::make_shared<Chunk>();
+	unlightBudgetChunk->cpos = { 0, 0 };
+	unlightBudgetChunk->state.store(ChunkState::Generated);
+	unlightBudgetWorld.chunks[Int32_2{ 0, 0 }] = unlightBudgetChunk;
+	std::array<SubChunk::NibbleLayer, SUB_CHUNK_COUNT> unlightGradient;
+	for (int s = 0; s < SUB_CHUNK_COUNT; ++s) {
+		for (int x = 0; x < CHUNK_WIDTH; ++x) {
+			for (int z = 0; z < CHUNK_WIDTH; ++z) {
+				for (int ly = 0; ly < SUB_CHUNK_SIZE; ++ly) {
+					const int y = s * SUB_CHUNK_SIZE + ly;
+					const int distance = std::abs(x - 8) + std::abs(y - 64) + std::abs(z - 8);
+					unlightGradient[size_t(s)].Set(SubChunk::LocalIndex({ x, y, z }),
+					                               uint8_t(std::max(0, 15 - distance)));
+				}
+			}
+		}
+	}
+	for (auto& sub : unlightBudgetChunk->subChunks)
+		sub.SetBlockLight(0, 1); // allocate the block-light layer
+	auto resetGradient = [&] {
+		for (int s = 0; s < SUB_CHUNK_COUNT; ++s)
+			unlightBudgetChunk->subChunks[size_t(s)].blockLight->data = unlightGradient[size_t(s)].data;
+	};
+	auto unlightRun = [&](size_t _budget) {
+		unlightBudgetWorld.lightManager.ProcessLightQueue(unlightBudgetWorld, INT_MAX);
+		unlightBudgetWorld.lightManager.DiscardUnlightQueue();
+		resetGradient();
+		unlightBudgetWorld.lightManager.BeginUnlightTick(_budget);
+		unlightBudgetWorld.lightManager.UnlightAt(8, 64, 8, LightType::Block, unlightBudgetWorld,
+		                                          unlightBudgetChunk.get());
+		return unlightBudgetWorld.lightManager.PendingUnlightUpdates();
+	};
+	Bench("unlight_burst_budget_1024", 0, [&] { return unlightRun(1024); });
+	Bench("unlight_burst_unbounded", 0, [&] { return unlightRun(SIZE_MAX); });
 
 	WorldManager lowLightWorld;
 	auto lowLightChunk = std::make_shared<Chunk>();
