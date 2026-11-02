@@ -17,8 +17,10 @@ struct TrapInventoryInteraction : InventoryInteraction {
 		TrapInventoryInteraction* owner = nullptr;
 		SharedInventory() : Inventory(45) {}
 		void OnInventoryChanged() override {
-			if (owner)
+			if (owner) {
+				owner->mirrorDirty = true;
 				owner->WriteBack();
+			}
 		}
 	} sharedInventory;
 

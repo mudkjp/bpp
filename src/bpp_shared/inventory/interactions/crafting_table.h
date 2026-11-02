@@ -19,8 +19,10 @@ struct CraftingTableInventoryInteraction : CraftingInventoryInteraction {
 		CraftingTableInventoryInteraction* owner = nullptr;
 		SharedInventory() : Inventory(46) {}
 		void OnInventoryChanged() override {
-			if (owner)
+			if (owner) {
+				owner->mirrorDirty = true;
 				owner->WriteBack();
+			}
 		}
 	} sharedInventory;
 

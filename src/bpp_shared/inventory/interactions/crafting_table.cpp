@@ -53,21 +53,22 @@ void CraftingTableInventoryInteraction::InitSnapshot() {
 	snapshot.resize(size_t(sharedInventory.GetSizeInventory()));
 	for (size_t i = 0; i < snapshot.size(); i++)
 		snapshot[i] = sharedInventory.slots[i];
+	mirrorDirty = false;
 }
 
 std::span<const DeltaSlot> CraftingTableInventoryInteraction::TickDiff() {
-	diffScratch.clear();
-	MergeInventories(); // make sure sharedInventory is current before diffing
-	const size_t count = snapshot.size();
-	ItemStack* snapshots = snapshot.data();
-	const ItemStack* slots = sharedInventory.slots.data();
-	for (size_t i = 0; i < count; i++) {
-		if (snapshots[i] == slots[i])
-			continue;
-		snapshots[i] = slots[i];
-		diffScratch.push_back({ snapshots[i], int(i) });
+	dirtySlots.clear();
+	const bool changed = SyncSlots(sharedInventory.slots, 0, craftInventory.slots, 0, 10, dirtySlots) |
+	                     SyncSlots(sharedInventory.slots, 10, playerInventory->slots, 9, 45, dirtySlots);
+	if (!changed && !mirrorDirty) {
+		diffScratch.clear();
+		return {};
 	}
-	return diffScratch;
+	if (mirrorDirty) {
+		mirrorDirty = false;
+		return InventoryInteraction::TickDiff();
+	}
+	return EmitTrackedDiffs();
 }
 
 void CraftingTableInventoryInteraction::MergeInventories() {
@@ -76,6 +77,7 @@ void CraftingTableInventoryInteraction::MergeInventories() {
 		sharedInventory.slots[slotCount++] = craftInventory.slots[i];
 	for (size_t i = 9; i < 45; i++)
 		sharedInventory.slots[slotCount++] = playerInventory->slots[i];
+	mirrorDirty = true;
 }
 
 void CraftingTableInventoryInteraction::UpdateResult() {

@@ -17,8 +17,10 @@ struct ChestInventoryInteraction : InventoryInteraction {
 		ChestInventoryInteraction* owner = nullptr;
 		SharedInventory() : Inventory(63) {}
 		void OnInventoryChanged() override {
-			if (owner)
+			if (owner) {
+				owner->mirrorDirty = true;
 				owner->WriteBack();
+			}
 		}
 	} sharedInventory;
 

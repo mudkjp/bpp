@@ -34,11 +34,22 @@ bool FurnaceInventoryInteraction::CanExist(PlayerEntity& _player) {
 void FurnaceInventoryInteraction::InitSnapshot() {
 	MergeInventories();
 	snapshot = sharedInventory.slots;
+	mirrorDirty = false;
 }
 
 std::span<const DeltaSlot> FurnaceInventoryInteraction::TickDiff() {
-	MergeInventories();
-	return InventoryInteraction::TickDiff();
+	dirtySlots.clear();
+	const bool changed = SyncSlots(sharedInventory.slots, 0, furnaceInventory->slots, 0, 3, dirtySlots) |
+	                     SyncSlots(sharedInventory.slots, 3, playerInventory->slots, 9, 45, dirtySlots);
+	if (!changed && !mirrorDirty) {
+		diffScratch.clear();
+		return {};
+	}
+	if (mirrorDirty) {
+		mirrorDirty = false;
+		return InventoryInteraction::TickDiff();
+	}
+	return EmitTrackedDiffs();
 }
 
 void FurnaceInventoryInteraction::MergeInventories() {
@@ -47,6 +58,7 @@ void FurnaceInventoryInteraction::MergeInventories() {
 		sharedInventory.slots[slotCount++] = slot;
 	for (size_t i = 9; i < 45; i++)
 		sharedInventory.slots[slotCount++] = playerInventory->slots[i];
+	mirrorDirty = true;
 }
 
 void FurnaceInventoryInteraction::WriteBack() {

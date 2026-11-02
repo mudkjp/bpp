@@ -17,8 +17,10 @@ struct FurnaceInventoryInteraction : InventoryInteraction {
 		FurnaceInventoryInteraction* owner = nullptr;
 		SharedInventory() : Inventory(39) {}
 		void OnInventoryChanged() override {
-			if (owner)
+			if (owner) {
+				owner->mirrorDirty = true;
 				owner->WriteBack();
+			}
 		}
 	} sharedInventory;
 
