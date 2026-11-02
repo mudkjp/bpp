@@ -78,12 +78,13 @@ void SendChunkedList(const CommandContext& _ctx, const std::string& _header,
 	std::string line = "§7";
 	for (size_t i = 0; i < _entries.size(); i++) {
 		const auto& entry = _entries[i];
-		const std::string suffix = i + 1 < _entries.size() ? ", " : "";
+		const std::string_view suffix = i + 1 < _entries.size() ? ", " : "";
 		if (line.size() + entry.size() + suffix.size() > 64 && line != "§7") {
 			SendFeedback(_ctx, line);
 			line = "§7";
 		}
-		line += entry + suffix;
+		line += entry;
+		line += suffix;
 	}
 	if (line != "§7")
 		SendFeedback(_ctx, line);

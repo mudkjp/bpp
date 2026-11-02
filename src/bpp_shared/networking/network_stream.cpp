@@ -13,6 +13,7 @@
 #include "ucs2.h"
 #include <algorithm>
 #include <string>
+#include <string_view>
 #include <vector>
 
 NetworkStream::NetworkStream(int _pClientSocket) {
@@ -191,6 +192,79 @@ void NetworkStream::ReadString16Into(std::string& _out) {
 			_out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
 		}
 	}
+}
+
+namespace {
+// Counts UTF-16 code units in a string containing only ASCII bytes and the
+// two-byte UTF-8 encoding of U+00A7. Returns false for anything else.
+bool CountSimpleChatUnits(std::string_view _str, size_t& _units) {
+	_units = 0;
+	for (size_t i = 0; i < _str.size();) {
+		const auto c = static_cast<unsigned char>(_str[i]);
+		if (c < 0x80) {
+			++_units;
+			++i;
+		} else if (c == 0xC2 && i + 1 < _str.size() && static_cast<unsigned char>(_str[i + 1]) == 0xA7) {
+			++_units;
+			i += 2;
+		} else {
+			return false;
+		}
+	}
+	return true;
+}
+} // namespace
+
+void NetworkStream::WriteString16Simple(std::string_view _prefix, std::string_view _body) {
+	size_t prefixUnits = 0;
+	size_t bodyUnits = 0;
+	if (!CountSimpleChatUnits(_prefix, prefixUnits) || !CountSimpleChatUnits(_body, bodyUnits)) {
+		std::string combined;
+		combined.reserve(_prefix.size() + _body.size());
+		combined.append(_prefix);
+		combined.append(_body);
+		WriteString16(combined);
+		return;
+	}
+
+	size_t totalUnits = prefixUnits + bodyUnits;
+	const size_t clampedUnits = std::min<size_t>(totalUnits, UINT16_MAX);
+	Write(static_cast<uint16_t>(clampedUnits));
+	if (!connected)
+		return;
+
+	const size_t bodyBytes = clampedUnits * sizeof(char16_t);
+	if (PendingWriteBytes() + bodyBytes > MAX_WRITE_BUFFER) {
+		Logger::Warning << "NetworkStream: write buffer limit exceeded, dropping client\n";
+		connected = false;
+		return;
+	}
+	if (writePos > 0 && writeBuffer.size() + bodyBytes > MAX_WRITE_BUFFER)
+		CompactWriteBuffer();
+
+	const size_t old = writeBuffer.size();
+	writeBuffer.resize(old + bodyBytes);
+	uint8_t* dst = writeBuffer.data() + old;
+
+	auto writePart = [&](std::string_view _part, size_t& _writtenUnits) {
+		for (size_t i = 0; i < _part.size() && _writtenUnits < clampedUnits;) {
+			const auto c = static_cast<unsigned char>(_part[i]);
+			uint16_t unit;
+			if (c < 0x80) {
+				unit = c;
+				++i;
+			} else {
+				unit = 0x00A7;
+				i += 2;
+			}
+			dst[_writtenUnits * 2] = uint8_t(unit >> 8);
+			dst[_writtenUnits * 2 + 1] = uint8_t(unit & 0xFF);
+			++_writtenUnits;
+		}
+	};
+	size_t written = 0;
+	writePart(_prefix, written);
+	writePart(_body, written);
 }
 
 size_t NetworkStream::ReadBytes(uint8_t* _buf, size_t _len) {

@@ -98,6 +98,10 @@ public:
 	// Clears the buffer first; on a short read it is left empty.
 	void ReadString16Into(std::string& _out);
 	void WriteString16(const std::string& _str);
+	// Fast path for text made only of ASCII bytes and U+00A7 (UTF-8 C2 A7).
+	// Writes UTF-16BE directly into the write buffer without building a
+	// u16string. Falls back to WriteString16 for any other code points.
+	void WriteString16Simple(std::string_view _prefix, std::string_view _body);
 
 	// Copies up to _len bytes out of the internal read buffer.
 	size_t ReadBytes(uint8_t* _buf, size_t _len);
