@@ -1112,6 +1112,31 @@ void TestTrackerMassDespawn() {
 	CHECK_EQ(staleTracker.staleVisibilityErases, size_t(1));
 }
 
+void TestEntityTickScratch() {
+	struct StationaryEntity : Entity {
+		void Tick() override {}
+	};
+
+	WorldManager world;
+	EntityManager manager;
+	manager.world = &world;
+	EntityId nextId = 1;
+	manager.nextEntityId = &nextId;
+	for (int i = 0; i < 1000; ++i) {
+		auto entity = std::make_shared<StationaryEntity>();
+		entity->position = { double(i % 16), 64.0, double(i / 16) };
+		manager.AddEntity(entity);
+	}
+
+	manager.Tick();
+	const size_t capacity = manager.TickSnapshotCapacity();
+	CHECK(capacity >= size_t(1000));
+	for (int i = 0; i < 100; ++i)
+		manager.Tick();
+	CHECK_EQ(manager.TickSnapshotCapacity(), capacity);
+	CHECK_EQ(manager.tickSnapshot.size(), size_t(1000));
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1248,6 +1273,7 @@ std::vector<TestCase> Tests() {
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "entity_index", TestEntityIndex },
 		{ "entity_aabb_queries", TestEntityAabbQueries },
+		{ "entity_tick_scratch", TestEntityTickScratch },
 		{ "equipment_dirty_gating", TestEquipmentDirtyGating },
 		{ "tracker_update_operations", TestTrackerUpdateOperations },
 		{ "tracker_spawn_pass_cache", TestTrackerSpawnPassCaching },
@@ -1510,6 +1536,24 @@ void RunBenchmarks() {
 	});
 	std::cout << std::format("BENCH tracker_mass_despawn_operations  removed=1000 full_map_scans=0 stale_visibility_erases={}\n",
 	                         massTracker.staleVisibilityErases);
+
+	struct BenchEntity : Entity {
+		void Tick() override {}
+	};
+	WorldManager tickWorld;
+	EntityManager tickManager;
+	tickManager.world = &tickWorld;
+	EntityId tickNextId = 1;
+	tickManager.nextEntityId = &tickNextId;
+	for (int i = 0; i < 1000; ++i) {
+		auto entity = std::make_shared<BenchEntity>();
+		entity->position = { double(i % 16), 64.0, double(i / 16) };
+		tickManager.AddEntity(entity);
+	}
+	Bench("entity_tick_1000", 0, [&] {
+		tickManager.Tick();
+		return tickManager.entities.size();
+	});
 
 	WorldManager interestWorld;
 	std::vector<ClientPosition> interestPlayers(4);
