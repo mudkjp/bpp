@@ -16,9 +16,12 @@ void InventoryInteraction::InitSnapshot() {
 }
 
 std::vector<DeltaSlot> InventoryInteraction::TickDiff() {
+	if (snapshot.empty())
+		return {};
+
 	std::vector<DeltaSlot> differences;
+	differences.reserve(snapshot.size());
 	for (size_t i = 0; i < snapshot.size(); i++) {
-		inventory->GetStackInSlot(i);
 		auto& snap = snapshot[i];
 
 		bool changed = snap != inventory->slots[i];
