@@ -15,6 +15,7 @@
 #include "tile_entities/tile_entity.h"
 #include "world/world.h"
 #include <algorithm>
+#include <climits>
 #include <cstdint>
 #include <future>
 #include <memory>
@@ -63,12 +64,25 @@ struct ChunkSender {
 		std::shared_future<std::shared_ptr<const std::vector<uint8_t>>> data;
 	};
 
+	struct ScanState {
+		Int32_2 center{ INT32_MIN, INT32_MIN };
+		int radius = -1;
+		bool valid = false;
+		std::vector<Int32_2> retry;
+	};
+
 	// Per-session queue of in-flight full-chunk serialization jobs.
 	std::unordered_map<PlayerSession*, std::vector<PendingChunk>> inFlight;
 
 	// Per-session queue of in-flight sub-region compression jobs.
 	// Drained in-order by flush() after the full-chunk queue.
 	std::unordered_map<PlayerSession*, std::vector<PendingSubRegion>> subRegionFlight;
+
+	// Per-session cached chunk-radius scan state. With an unchanged center and
+	// radius only the small retry list is checked, not the whole view square.
+	std::unordered_map<PlayerSession*, ScanState> scanStates;
+	// Diagnostic counter: number of radius cells examined by full scans.
+	size_t radiusLookups = 0;
 
 	BS::thread_pool<> pool{ 2 };
 
@@ -94,27 +108,51 @@ struct ChunkSender {
 		                 ? std::min(_session.position.viewDistanceOverride, _world.GetViewRadius())
 		                 : _world.GetViewRadius();
 
+		ScanState& scan = scanStates[&_session];
+		const Int32_2 center{ cx, cz };
+		const bool rebuild = !scan.valid || scan.center != center || scan.radius != radius;
 		std::vector<Int32_2> toSend;
-		for (int dx = -radius; dx <= radius; dx++) {
-			for (int dz = -radius; dz <= radius; dz++) {
-				Int32_2 p{ cx + dx, cz + dz };
-				auto worldIt = _world.chunks.find(p);
-				if (worldIt == _world.chunks.end())
-					continue;
+
+		if (rebuild) {
+			scan.valid = true;
+			scan.center = center;
+			scan.radius = radius;
+			scan.retry.clear();
+			const size_t side = size_t(radius) * 2 + 1;
+			radiusLookups += side * side;
+
+			for (int dx = -radius; dx <= radius; dx++) {
+				for (int dz = -radius; dz <= radius; dz++) {
+					Int32_2 p{ cx + dx, cz + dz };
+					if (_session.sentChunks.contains(p))
+						continue;
+					auto worldIt = _world.chunks.find(p);
+					if (worldIt == _world.chunks.end() || !worldIt->second ||
+					    worldIt->second->state.load() < ChunkState::Generated) {
+						scan.retry.push_back(p);
+						continue;
+					}
+					toSend.push_back(p);
+				}
+			}
+		} else {
+			// Same center and radius: only positions that were missing or not
+			// generated last time can have become sendable.
+			std::vector<Int32_2> retry;
+			retry.reserve(scan.retry.size());
+			for (const Int32_2& p : scan.retry) {
 				if (_session.sentChunks.contains(p))
 					continue;
-				if (!worldIt->second || worldIt->second->state.load() < ChunkState::Generated)
+				auto worldIt = _world.chunks.find(p);
+				if (worldIt == _world.chunks.end() || !worldIt->second ||
+				    worldIt->second->state.load() < ChunkState::Generated) {
+					retry.push_back(p);
 					continue;
+				}
 				toSend.push_back(p);
 			}
+			scan.retry.swap(retry);
 		}
-
-		// Sort closer chunks first
-		std::sort(toSend.begin(), toSend.end(), [&](const Int32_2& _a, const Int32_2& _b) {
-			int da = std::abs(_a.x - cx) + std::abs(_a.z - cz);
-			int db = std::abs(_b.x - cx) + std::abs(_b.z - cz);
-			return da < db;
-		});
 
 		// Unload all out-of-range chunks immediately
 		std::vector<Int32_2> toUnload;
@@ -150,9 +188,11 @@ struct ChunkSender {
 
 		// Rebuild toSend, excluding chunks that already have an in-flight job.
 		int submitted = 0;
-		for (auto& p : toSend) {
+		size_t sendIndex = 0;
+		for (; sendIndex < toSend.size(); ++sendIndex) {
 			if (_batchSize > 0 && queue.size() >= static_cast<size_t>(_batchSize))
 				break;
+			const Int32_2& p = toSend[sendIndex];
 			PendingChunk pc;
 			std::shared_ptr<Chunk> chunkRef = _world.chunks.at(p);
 			pc.pos = p;
@@ -172,6 +212,10 @@ struct ChunkSender {
 			_session.sentChunks.insert(p);
 			++submitted;
 		}
+		// Anything we didn't submit this tick must be retried on the next one,
+		// even if the player has not moved.
+		for (; sendIndex < toSend.size(); ++sendIndex)
+			scan.retry.push_back(toSend[sendIndex]);
 		return static_cast<size_t>(submitted);
 	}
 
@@ -320,5 +364,6 @@ struct ChunkSender {
 	void Remove(PlayerSession& _session) {
 		inFlight.erase(&_session);
 		subRegionFlight.erase(&_session);
+		scanStates.erase(&_session);
 	}
 };
