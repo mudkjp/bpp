@@ -9,29 +9,60 @@
 #include "helpers/direction_fixer.h"
 #include "logger/logger.h"
 #include "world.h"
+#include <array>
+#include <cstdint>
 #include <deque>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
-static std::deque<RedstoneUpdateInfo> torchUpdates;
+namespace {
+// Sliding 100-tick window of torch toggle events. A per-position counter makes
+// burnout checks O(1) instead of scanning every event in the window.
+struct TorchUpdateState {
+	std::deque<RedstoneUpdateInfo> events;
+	std::unordered_map<Int3, uint16_t> counts;
+};
+
+TorchUpdateState& TorchUpdates() {
+	static TorchUpdateState state;
+	return state;
+}
+
+// Reused solver scratch; redstone updates can happen many times per tick.
+struct RedstoneSolverScratch {
+	std::unordered_set<Int3> visited;
+	std::vector<Int3> order;
+	std::vector<uint8_t> oldLevels;
+};
+
+RedstoneSolverScratch& SolverScratch() {
+	thread_local RedstoneSolverScratch scratch;
+	return scratch;
+}
+} // namespace
 
 void RedstoneManager::PruneTorchUpdates(WorldManager& _world) {
-	while (!torchUpdates.empty() && _world.elapsedTicks - torchUpdates.front().updateTime > 100)
-		torchUpdates.pop_front();
+	auto& state = TorchUpdates();
+	auto& events = state.events;
+	while (!events.empty() && _world.elapsedTicks - events.front().updateTime > 100) {
+		const auto& front = events.front();
+		auto it = state.counts.find({ front.x, front.y, front.z });
+		if (it != state.counts.end() && --it->second == 0)
+			state.counts.erase(it);
+		events.pop_front();
+	}
 }
 
 bool RedstoneManager::CheckTorchBurnout(WorldManager& _world, Int3 _pos, bool _logUpdate) {
-	if (_logUpdate)
-		torchUpdates.push_back({ _pos.x, _pos.y, _pos.z, _world.elapsedTicks });
-
-	int count = 0;
-	for (auto& entry : torchUpdates) {
-		if (entry.x == _pos.x && entry.y == _pos.y && entry.z == _pos.z) {
-			if (++count >= 8)
-				return true;
-		}
+	auto& state = TorchUpdates();
+	if (_logUpdate) {
+		state.events.push_back({ _pos.x, _pos.y, _pos.z, _world.elapsedTicks });
+		++state.counts[_pos];
 	}
-	return false;
+
+	auto it = state.counts.find(_pos);
+	return it != state.counts.end() && it->second >= 8;
 }
 
 static bool IsPoweredByAttachedLeverOrButton(WorldManager& _world, Int3 _pos) {
@@ -254,16 +285,16 @@ static int GetDustPowerLevel(WorldManager& _world, Int3 _pos) {
 
 		for (int dy = _pos.y - 1; dy <= _pos.y + 1; dy++) {
 			Int3 dPos = { dx, dy, dz };
-			auto checkId = _world.GetBlockId(dPos);
-			auto checkMeta = _world.GetMetadata(dPos);
+			const auto checkId = _world.GetBlockId(dPos);
+			const auto checkMeta = _world.GetMetadata(dPos);
+			const bool sameLevel = dy == _pos.y;
 			// We only care if we are being hard powered from the same Y level
-			if (dy == _pos.y && RedstoneManager::GetBlockPowerProfile(_world, dPos).hardPowered)
+			if (sameLevel && RedstoneManager::GetBlockPowerProfile(_world, dPos).hardPowered)
 				return 15;
 
 			// A torch sitting directly beside us
-			if (dy == _pos.y && checkId == BLOCK_REDSTONE_TORCH_ON) {
-				auto torchMeta = checkMeta;
-				auto torchProfile = RedstoneManager::GetComponentProfile(BLOCK_REDSTONE_TORCH_ON, torchMeta);
+			if (sameLevel && checkId == BLOCK_REDSTONE_TORCH_ON) {
+				auto torchProfile = RedstoneManager::GetComponentProfile(BLOCK_REDSTONE_TORCH_ON, checkMeta);
 
 				// Direction FROM the torch TOWARD us
 				bool torchPowersUs = false;
@@ -281,9 +312,8 @@ static int GetDustPowerLevel(WorldManager& _world, Int3 _pos) {
 			}
 
 			// A repeater sitting directly beside us
-			if (dy == _pos.y && checkId == BLOCK_REDSTONE_REPEATER_ON) {
-				auto repeaterMeta = checkMeta;
-				auto repeaterProfile = RedstoneManager::GetComponentProfile(BLOCK_REDSTONE_REPEATER_ON, repeaterMeta);
+			if (sameLevel && checkId == BLOCK_REDSTONE_REPEATER_ON) {
+				auto repeaterProfile = RedstoneManager::GetComponentProfile(BLOCK_REDSTONE_REPEATER_ON, checkMeta);
 
 				// Direction FROM the repeater TOWARD us
 				bool repeaterPowersUs = false;
@@ -301,11 +331,10 @@ static int GetDustPowerLevel(WorldManager& _world, Int3 _pos) {
 			}
 
 			// A lever or button or pressure plate sitting directly beside us
-			if (dy == _pos.y && (checkId == BLOCK_LEVER || checkId == BLOCK_BUTTON_STONE ||
-			                     checkId == BLOCK_PRESSURE_PLATE_STONE || checkId == BLOCK_PRESSURE_PLATE_WOOD || checkId == BLOCK_RAIL_DETECTOR)) {
-				auto neighborBlock = _world.GetBlockId(dPos);
-				auto neighborMeta = _world.GetMetadata(dPos);
-				auto neighborProfile = RedstoneManager::GetComponentProfile(neighborBlock, neighborMeta);
+			if (sameLevel && (checkId == BLOCK_LEVER || checkId == BLOCK_BUTTON_STONE ||
+			                  checkId == BLOCK_PRESSURE_PLATE_STONE || checkId == BLOCK_PRESSURE_PLATE_WOOD ||
+			                  checkId == BLOCK_RAIL_DETECTOR)) {
+				auto neighborProfile = RedstoneManager::GetComponentProfile(checkId, checkMeta);
 
 				// Direction FROM the lever/button TOWARD us
 				bool poweredTowardUs = false;
@@ -323,12 +352,11 @@ static int GetDustPowerLevel(WorldManager& _world, Int3 _pos) {
 			}
 
 			// Check if we are a valid connection (same level, or a valid vertical bridge)
-			bool canConnect = (dy == _pos.y) || RedstoneManager::CanBridgeVertical(_world, _pos, rdx, rdz, dy - _pos.y);
-			if (_world.GetBlockId(dPos) == BLOCK_REDSTONE && canConnect) {
+			bool canConnect = sameLevel || RedstoneManager::CanBridgeVertical(_world, _pos, rdx, rdz, dy - _pos.y);
+			if (checkId == BLOCK_REDSTONE && canConnect) {
 				// This is a dust so use its current power level directly
-				auto neighborLevel = _world.GetMetadata(dPos);
-				if (neighborLevel > best)
-					best = neighborLevel;
+				if (checkMeta > best)
+					best = checkMeta;
 			}
 		}
 	}
@@ -411,7 +439,8 @@ static void GetNeighbors(WorldManager& _world, Int3 _pos, std::unordered_set<Int
 		doProfileCheck = true;
 	}
 
-	std::vector<Int3> neighbors;
+	std::array<Int3, 12> neighbors;
+	int neighborCount = 0;
 	// Horizontal scan
 	for (int dy = -1 + _pos.y; dy <= 1 + _pos.y; dy++) {
 		int d[4] = { -1, 1, 0, 0 };
@@ -444,16 +473,13 @@ static void GetNeighbors(WorldManager& _world, Int3 _pos, std::unordered_set<Int
 
 			if (_world.GetBlockId({ dx, dy, dz }) == BLOCK_REDSTONE && canConnect)
 				if (!_visited.count({ dx, dy, dz }))
-					neighbors.push_back({ dx, dy, dz });
+					neighbors[size_t(neighborCount++)] = { dx, dy, dz };
 		}
 	}
 
 	// If we had dust around us there might be dust connecting to them too
-	if (neighbors.size() != 0) {
-		for (auto& neighbor : neighbors) {
-			GetNeighbors(_world, neighbor, _visited, _order);
-		}
-	}
+	for (int i = 0; i < neighborCount; ++i)
+		GetNeighbors(_world, neighbors[size_t(i)], _visited, _order);
 };
 
 static bool ResolvePowerLevels(WorldManager& _world, const std::vector<Int3>& _positions) {
@@ -473,21 +499,27 @@ static bool ResolvePowerLevels(WorldManager& _world, const std::vector<Int3>& _p
 // Flood fill solver
 // Avoids a ton of redundant updates!
 static void SolveRedstoneNetwork(WorldManager& _world, Int3 _pos) {
-	std::unordered_set<Int3> visited;
-	std::vector<Int3> order;
+	auto& scratch = SolverScratch();
+	auto& visited = scratch.visited;
+	auto& order = scratch.order;
+	auto& oldLevels = scratch.oldLevels;
+	visited.clear();
+	order.clear();
+	oldLevels.clear();
+
 	GetNeighbors(_world, _pos, visited, order, /*disable profile checks=*/true);
 
-	std::unordered_map<Int3, uint8_t> oldLevels;
-	for (auto& pos : order) {
-		oldLevels.insert({ pos, static_cast<uint8_t>(_world.GetMetadata(pos)) });
-	}
+	oldLevels.reserve(order.size());
+	for (auto& pos : order)
+		oldLevels.push_back(static_cast<uint8_t>(_world.GetMetadata(pos)));
 
 	while (ResolvePowerLevels(_world, order))
 		;
 
 	// Each redstone wire will try and reach further out if it went from 0->powered or powered->0
-	for (auto& pos : order) {
-		auto oldLevel = oldLevels.find(pos)->second;
+	for (size_t i = 0; i < order.size(); ++i) {
+		const auto& pos = order[i];
+		auto oldLevel = oldLevels[i];
 		auto newLevel = _world.GetMetadata(pos);
 		if (oldLevel != newLevel && (oldLevel == 0 || newLevel == 0)) {
 			// Always notify this wire tile's own direct neighbors
