@@ -805,7 +805,8 @@ void WorldManager::SeedChunkLighting(Int32_2 _pos) {
 
 void WorldManager::UpdateLoadRadius(const std::vector<ClientPosition>& _players) {
 	std::unordered_set<Int32_2> wanted;
-	const size_t viewArea = size_t((viewRadius * 2 + 1) * (viewRadius * 2 + 1));
+	const size_t viewSide = size_t(viewRadius) * 2 + 1;
+	const size_t viewArea = viewSide * viewSide;
 	wanted.reserve(_players.size() * viewArea);
 	for (const auto& player : _players) {
 		Int2 center = player.GetChunkPos();

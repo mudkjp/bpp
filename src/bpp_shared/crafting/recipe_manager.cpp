@@ -19,7 +19,8 @@ static constexpr ItemKey NormalizeItemMetadata(ItemKey _key) noexcept {
 	return _key;
 }
 
-void RecipeManager::AddShapelessRecipe(std::span<const ItemKey> _items, ItemStack _output) {	auto [it, inserted] = shapelessRecipes.try_emplace(MakeShapelessKey(_items), _output);
+void RecipeManager::AddShapelessRecipe(std::span<const ItemKey> _items, ItemStack _output) {
+	auto [it, inserted] = shapelessRecipes.try_emplace(MakeShapelessKey(_items), _output);
 
 	[[unlikely]]
 	if (!inserted) {
@@ -74,7 +75,7 @@ void RecipeManager::AddShapedRecipe(std::initializer_list<std::string_view> _row
 	auto [it, inserted] = shapedRecipes.try_emplace(MakeShapedKey(grid, { 3, 3 }), _output);
 
 	[[unlikely]]
-	if (!inserted) {
+	if (!inserted && it->second != _output) {
 		it->second = _output;
 		Logger::Warning << "Overwriting existing shaped recipe for output item " << _output << "\n";
 	}
