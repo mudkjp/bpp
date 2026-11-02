@@ -131,12 +131,15 @@ public:
 
 	// Send a message to all players
 	void SendGlobalChatMessage(std::string _message) {
+		Packet::ChatMessage reply;
+		reply.message = _message;
+		NetworkStream scratch(-1);
+		reply.Serialize(scratch);
+		const auto& bytes = scratch.GetRawWriteBuffer();
 		for (auto& other : players) {
 			if (!other || other->connState != ConnectionState::Playing)
 				continue;
-			Packet::ChatMessage reply;
-			reply.message = _message;
-			reply.Serialize(other->stream);
+			other->stream.WriteRaw(bytes.data(), bytes.size());
 		}
 		Logger::LogStyled(_message);
 	}

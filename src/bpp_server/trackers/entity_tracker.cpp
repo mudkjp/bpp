@@ -483,33 +483,50 @@ void EntityTracker::SpawnEntityForPlayer(EntityId _playerId, TrackedEntry& _enti
 }
 
 void EntityTracker::DespawnEntityForViewers(EntityId _entityId, TrackedEntry& _entry) {
+	if (_entry.visibleTo.empty())
+		return;
+	Packet::DespawnEntity pkt;
+	pkt.entityId = _entityId;
+	NetworkStream scratch(-1);
+	pkt.Serialize(scratch);
+	const auto& bytes = scratch.GetRawWriteBuffer();
 	for (EntityId viewerId : _entry.visibleTo) {
 		auto pSession = server->GetSessionById(viewerId);
 		if (!pSession)
 			continue;
-		Packet::DespawnEntity pkt;
-		pkt.entityId = _entityId;
-		pkt.Serialize(pSession->stream);
+		pSession->stream.WriteRaw(bytes.data(), bytes.size());
 	}
 }
 
 void EntityTracker::SendPacketToPlayersInTrackedEntry(Packet::BasePacket& _pkt, TrackedEntry& _trackedEntry) {
+	if (_trackedEntry.visibleTo.empty())
+		return;
+	// Serialize once and fan the bytes out, instead of re-serializing the same
+	// packet (including any string encoding) for every viewer.
+	NetworkStream scratch(-1);
+	_pkt.Serialize(scratch);
+	const auto& bytes = scratch.GetRawWriteBuffer();
 	for (EntityId playerId : _trackedEntry.visibleTo) {
 		auto playerIt = trackedEntities.find(playerId);
 		if (playerIt == trackedEntities.end()) continue;
 
 		auto* player = static_cast<EntityMPPlayer*>(playerIt->second.entity);
 		if (!player || !player->session) continue;
-		_pkt.Serialize(player->session->stream);
+		player->session->stream.WriteRaw(bytes.data(), bytes.size());
 	}
 }
 
 void EntityTracker::SendPacketToAllPlayers(Packet::BasePacket& _pkt) {
+	if (playerIds.empty())
+		return;
+	NetworkStream scratch(-1);
+	_pkt.Serialize(scratch);
+	const auto& bytes = scratch.GetRawWriteBuffer();
 	for (auto& player : this->playerIds) {
 		auto session = server->GetSessionById(player);
 		if (!session)
 			continue;
-		_pkt.Serialize(session->stream);
+		session->stream.WriteRaw(bytes.data(), bytes.size());
 	}
 }
 

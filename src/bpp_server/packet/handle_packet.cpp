@@ -110,11 +110,14 @@ void ChatMessage(Packet::ChatMessage& _pkt, PlayerSession& _session,
 	Packet::ChatMessage reply;
 	reply.message = "<" + _session.username + "> " + _pkt.message;
 
-	// This includes the current session too
+	// Serialize once, then fan the bytes out to every recipient.
+	NetworkStream scratch(-1);
+	reply.Serialize(scratch);
+	const auto& bytes = scratch.GetRawWriteBuffer();
 	for (auto& receiver : _players) {
 		if (receiver->connState != ConnectionState::Playing)
 			continue;
-		reply.Serialize(receiver->stream);
+		receiver->stream.WriteRaw(bytes.data(), bytes.size());
 	}
 }
 
