@@ -12,6 +12,9 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 struct EntityBucket {
 	// 16 blocks tall
@@ -36,6 +39,11 @@ struct EntityManager {
 	std::unordered_map<Int2, EntityContainer> entityContainers;
 	WorldManager* world = nullptr; // we need to bind a pointer to this later
 
+	// Reused per-tick scratch, avoids rebuilding temporary vectors each tick.
+	std::vector<std::weak_ptr<Entity>> tickSnapshot;
+	std::vector<std::shared_ptr<Entity>> tickDead;
+	std::unordered_set<Entity*> tickDeadSet;
+
 	// Callbacks that we can link into
 	std::function<void(std::shared_ptr<Entity>)> onEntitySpawn;
 	std::function<void(std::shared_ptr<Entity>)> onEntityDespawn;
@@ -58,6 +66,9 @@ struct EntityManager {
 	std::vector<Tag> CollectEntitiesForSave(Int2 _cpos, bool _clearCollectedEntities = false);
 	std::optional<std::string> GetEntityNbtId(EntityType _type);
 	void Tick(TickProfiler* _profiler = nullptr);
+	size_t TickSnapshotCapacity() const {
+		return tickSnapshot.capacity();
+	}
 	void AddEntity(std::shared_ptr<Entity> _entity, EntityId _forceEntityId = -1);
 	void RemoveEntity(EntityId _id);
 	void CreateEntityFromNbt(Tag& _nbt);

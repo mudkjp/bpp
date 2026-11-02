@@ -312,10 +312,12 @@ void EntityManager::TickEntityAndPassenger(const std::shared_ptr<Entity>& _entit
 }
 
 void EntityManager::Tick(TickProfiler* _profiler) {
-	// Snapshot weak refs so mid-tick spawn/despawn cannot invalidate iteration,
-	// without the full shared_ptr vector copy every tick.
-	std::vector<std::weak_ptr<Entity>> toTick;
-	toTick.reserve(entities.size());
+	// Snapshot weak refs so mid-tick spawn/despawn cannot invalidate iteration.
+	// The snapshot and dead-list scratch are reused across ticks.
+	auto& toTick = tickSnapshot;
+	toTick.clear();
+	if (toTick.capacity() < entities.size())
+		toTick.reserve(entities.size());
 	for (const auto& entity : entities)
 		toTick.emplace_back(entity);
 
@@ -335,10 +337,11 @@ void EntityManager::Tick(TickProfiler* _profiler) {
 	}
 
 	// Remove dead entities after ticking. Detach them all first, then erase
-	// them from the master list in one pass; doing RemoveEntity() per death
-	// was O(dead * entities) because of the repeated find/erase.
-	std::vector<std::shared_ptr<Entity>> dead;
-	std::unordered_set<Entity*> deadSet;
+	// them from the master list in one pass.
+	auto& dead = tickDead;
+	auto& deadSet = tickDeadSet;
+	dead.clear();
+	deadSet.clear();
 	for (const auto& entity : entities) {
 		if (entity->isDead) {
 			dead.push_back(entity);
