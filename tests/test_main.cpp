@@ -523,10 +523,14 @@ void TestRegionOverwriteReusesSectors() {
 	auto chunk = std::make_shared<Chunk>();
 	BuildSyntheticChunk(*chunk);
 	CHECK(region.AddChunk(chunk, 1, nullptr));
+	const auto firstOffset = region.ChunkSectorOffset(Int32_2{ 0, 0 });
 	const auto firstSize = std::filesystem::file_size(target);
+	CHECK(firstOffset >= 2);
+
+	// Same-size rewrite must reuse the existing sector extent.
 	CHECK(region.AddChunk(chunk, 2, nullptr));
-	const auto secondSize = std::filesystem::file_size(target);
-	CHECK_EQ(firstSize, secondSize);
+	CHECK_EQ(region.ChunkSectorOffset(Int32_2{ 0, 0 }), firstOffset);
+	CHECK_EQ(std::filesystem::file_size(target), firstSize);
 
 	Region::ReadStatus status = Region::ReadStatus::Error;
 	auto loaded = region.GetChunk(Int32_2{ 0, 0 }, status);
@@ -534,6 +538,34 @@ void TestRegionOverwriteReusesSectors() {
 	CHECK(loaded != nullptr);
 	if (loaded)
 		CHECK_EQ(int(loaded->GetBlock({ 7, 42, 9 })), int(chunk->GetBlock({ 7, 42, 9 })));
+
+	// A much smaller payload also fits in place and keeps the same extent.
+	auto smallChunk = std::make_shared<Chunk>();
+	smallChunk->cpos = { 0, 0 };
+	CHECK(region.AddChunk(smallChunk, 3, nullptr));
+	CHECK_EQ(region.ChunkSectorOffset(Int32_2{ 0, 0 }), firstOffset);
+	CHECK_EQ(std::filesystem::file_size(target), firstSize);
+
+	status = Region::ReadStatus::Error;
+	loaded = region.GetChunk(Int32_2{ 0, 0 }, status);
+	CHECK_EQ(status, Region::ReadStatus::Ok);
+	CHECK(loaded != nullptr);
+	if (loaded)
+		CHECK_EQ(int(loaded->GetBlock({ 7, 42, 9 })), int(BLOCK_AIR));
+
+	// Growing past the old extent still takes the occupancy/free-run path.
+	auto bigChunk = std::make_shared<Chunk>();
+	bigChunk->cpos = { 0, 0 };
+	BuildSyntheticChunk(*bigChunk);
+	bigChunk->cpos = { 0, 0 };
+	CHECK(region.AddChunk(bigChunk, 4, nullptr));
+	CHECK(std::filesystem::file_size(target) >= firstSize);
+	status = Region::ReadStatus::Error;
+	loaded = region.GetChunk(Int32_2{ 0, 0 }, status);
+	CHECK_EQ(status, Region::ReadStatus::Ok);
+	CHECK(loaded != nullptr);
+	if (loaded)
+		CHECK_EQ(int(loaded->GetBlock({ 7, 42, 9 })), int(bigChunk->GetBlock({ 7, 42, 9 })));
 }
 
 void TestRegionGeneratedRoundTrip() {
@@ -2551,6 +2583,22 @@ void RunBenchmarks() {
 		return found;
 	});
 	std::cout << "BENCH broadcast_sent_index_operations  chunks=1000 players=100 player_scans=0\n";
+
+	TempDir rewriteTemp("region-rewrite-bench");
+	{
+		std::ofstream file(rewriteTemp.path / "r.0.0.mcr", std::ios::binary);
+		std::string zeros(8192, '\0');
+		file.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+	}
+	Region rewriteRegion(Int32_2{ 0, 0 }, rewriteTemp.path.string());
+	auto rewriteChunk = std::make_shared<Chunk>();
+	BuildSyntheticChunk(*rewriteChunk);
+	const auto rewritePayload = rewriteRegion.EncodeNbtData(rewriteChunk, 1, nullptr);
+	rewriteRegion.AddEncodedChunk(rewritePayload, Int32_2{ 0, 0 });
+	Bench("region_addchunk_encoded_rewrite", rewritePayload.size(), [&] {
+		rewriteRegion.AddEncodedChunk(rewritePayload, Int32_2{ 0, 0 });
+		return size_t(1);
+	});
 
 	TempDir temp("region-bench");
 	std::filesystem::copy_file(Fixture("region/r.0.0.mcr"), temp.path / "r.0.0.mcr");
