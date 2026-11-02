@@ -1560,6 +1560,29 @@ void TestPlayerSaveQueue() {
 	CHECK_EQ(int(bob.Get("Health").GetShort()), 299);
 }
 
+void TestUnlightEarlyOut() {
+	WorldManager world;
+	for (int dx = -1; dx <= 1; ++dx) {
+		for (int dz = -1; dz <= 1; ++dz) {
+			auto chunk = std::make_shared<Chunk>();
+			chunk->cpos = { dx, dz };
+			chunk->state.store(ChunkState::Generated);
+			world.chunks[Int32_2{ dx, dz }] = std::move(chunk);
+		}
+	}
+	auto& center = world.chunks[Int32_2{ 0, 0 }];
+	center->SetBlockRaw({ 8, 64, 8 }, BLOCK_STONE);
+
+	// Block light is already zero here, so nothing should change.
+	world.lightManager.UnlightAt(8, 64, 8, LightType::Block, world);
+	CHECK_EQ(int(center->GetBlockLight({ 8, 64, 8 })), 0);
+
+	// Non-zero light still goes through the full unlight path.
+	center->SetSkyLight({ 8, 64, 8 }, 15);
+	world.lightManager.UnlightAt(8, 64, 8, LightType::Sky, world);
+	CHECK_EQ(int(center->GetSkyLight({ 8, 64, 8 })), 0);
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1771,6 +1794,7 @@ std::vector<TestCase> Tests() {
 		{ "loading_chunk_index", TestLoadingChunkIndex },
 		{ "populate_frontier", TestPopulateFrontier },
 		{ "chunk_light_emitters", TestChunkLightEmitters },
+		{ "unlight_early_out", TestUnlightEarlyOut },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "collision_shape_storage", TestCollisionShapeStorage },
 		{ "entity_index", TestEntityIndex },
@@ -1920,6 +1944,31 @@ void RunBenchmarks() {
 	Bench("chunk_skylight_map", CHUNK_VOLUME, [&] {
 		skylit.GenerateSkylightMap();
 		return size_t(skylit.GetSkyLight({ 8, 64, 8 }));
+	});
+
+	WorldManager unlightWorld;
+	for (int dx = -1; dx <= 1; ++dx) {
+		for (int dz = -1; dz <= 1; ++dz) {
+			auto chunk = std::make_shared<Chunk>();
+			chunk->cpos = { dx, dz };
+			chunk->state.store(ChunkState::Generated);
+			unlightWorld.chunks[Int32_2{ dx, dz }] = std::move(chunk);
+		}
+	}
+	Bench("unlight_early_out", 0, [&] {
+		unlightWorld.lightManager.UnlightAt(8, 64, 8, LightType::Block, unlightWorld);
+		return unlightWorld.lightManager.PendingLightUpdates();
+	});
+	Bench("unlight_sky_nonzero", 0, [&] {
+		unlightWorld.chunks[Int32_2{ 0, 0 }]->SetSkyLight({ 8, 64, 8 }, 15);
+		unlightWorld.lightManager.UnlightAt(8, 64, 8, LightType::Sky, unlightWorld);
+		return unlightWorld.lightManager.PendingLightUpdates();
+	});
+	auto* unlightCenterChunk = unlightWorld.chunks[Int32_2{ 0, 0 }].get();
+	Bench("unlight_sky_nonzero_cached", 0, [&] {
+		unlightCenterChunk->SetSkyLight({ 8, 64, 8 }, 15);
+		unlightWorld.lightManager.UnlightAt(8, 64, 8, LightType::Sky, unlightWorld, unlightCenterChunk);
+		return unlightWorld.lightManager.PendingLightUpdates();
 	});
 
 	WorldManager pathWorld;
