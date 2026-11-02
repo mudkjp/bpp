@@ -11,6 +11,7 @@
 #include <cctype>
 #include <fstream>
 #include <string>
+#include <unordered_set>
 
 namespace {
 
@@ -36,11 +37,12 @@ std::vector<std::string> ListParser::Read(Target _target) {
 			Logger::Error << "Failed to create " << path << "\n";
 		return {};
 	}
+	std::unordered_set<std::string> seen;
 	for (std::string username; std::getline(file, username);) {
 		username = Trim(std::move(username));
 		if (username.empty())
 			continue;
-		if (std::find(values.begin(), values.end(), username) == values.end())
+		if (seen.insert(username).second)
 			values.push_back(std::move(username));
 	}
 	return values;

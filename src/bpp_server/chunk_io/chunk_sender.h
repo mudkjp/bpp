@@ -66,11 +66,12 @@ struct ChunkSender {
 		for (int dx = -radius; dx <= radius; dx++) {
 			for (int dz = -radius; dz <= radius; dz++) {
 				Int32_2 p{ cx + dx, cz + dz };
-				if (!_world.chunks.contains(p))
+				auto worldIt = _world.chunks.find(p);
+				if (worldIt == _world.chunks.end())
 					continue;
 				if (_session.sentChunks.contains(p))
 					continue;
-				if (_world.chunks[p]->state.load() < ChunkState::Generated)
+				if (!worldIt->second || worldIt->second->state.load() < ChunkState::Generated)
 					continue;
 				toSend.push_back(p);
 			}

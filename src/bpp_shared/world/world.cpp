@@ -69,7 +69,7 @@ int WorldManager::GetBlockLightValue(Int3 _wpos, bool _offsetNonFullBlocks) {
 	if (_offsetNonFullBlocks) {
 		auto blockId = this->GetBlockId(_wpos);
 		if (blockId == BLOCK_SLAB || blockId == BLOCK_FARMLAND || blockId == BLOCK_STAIRS_WOOD ||
-		    blockId == BLOCK_STAIRS_WOOD) {
+		    blockId == BLOCK_STAIRS_COBBLESTONE) {
 			int yP = GetBlockLightValue(_wpos.WithOffset(Cardinal::Value::Up), false);
 			int xP = GetBlockLightValue(_wpos.WithOffset(Cardinal::Value::East), false);
 			int xM = GetBlockLightValue(_wpos.WithOffset(Cardinal::Value::West), false);
@@ -805,6 +805,8 @@ void WorldManager::SeedChunkLighting(Int32_2 _pos) {
 
 void WorldManager::UpdateLoadRadius(const std::vector<ClientPosition>& _players) {
 	std::unordered_set<Int32_2> wanted;
+	const size_t viewArea = size_t((viewRadius * 2 + 1) * (viewRadius * 2 + 1));
+	wanted.reserve(_players.size() * viewArea);
 	for (const auto& player : _players) {
 		Int2 center = player.GetChunkPos();
 		int viewDist = (player.viewDistanceOverride) ? player.viewDistanceOverride : viewRadius;

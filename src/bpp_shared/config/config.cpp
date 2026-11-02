@@ -20,7 +20,8 @@ Config::Config(const std::string& _pPath) {
 
 std::string_view Config::Get(const std::string& _key) noexcept {
 	std::shared_lock readLock{ this->propertiesMutex };
-	return this->properties.contains(_key) ? this->properties.at(_key) : std::string_view();
+	auto it = this->properties.find(_key);
+	return it != this->properties.end() ? std::string_view(it->second) : std::string_view();
 }
 
 void Config::Set(const std::string& _key, std::string_view _value) noexcept {
