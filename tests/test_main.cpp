@@ -702,6 +702,24 @@ void TestChunkCacheRolling() {
 	}
 }
 
+void TestEntityIndex() {
+	WorldManager world;
+	EntityManager manager;
+	manager.world = &world;
+	EntityId nextId = 1;
+	manager.nextEntityId = &nextId;
+
+	auto entity = std::make_shared<Entity>();
+	manager.AddEntity(entity);
+	CHECK_EQ(entity->id, EntityId(1));
+	CHECK(manager.GetEntityByIdShared(entity->id) == entity);
+
+	manager.RemoveEntity(entity->id);
+	CHECK(manager.GetEntityByIdShared(entity->id) == nullptr);
+	CHECK(manager.entities.empty());
+	CHECK(manager.entitiesById.empty());
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -832,6 +850,7 @@ std::vector<TestCase> Tests() {
 		{ "chunk_cache_rolling", TestChunkCacheRolling },
 		{ "chunk_light_emitters", TestChunkLightEmitters },
 		{ "collision_fast_path", TestCollisionFastPath },
+		{ "entity_index", TestEntityIndex },
 		{ "region_fixture", TestRegionFixture },
 		{ "region_generated_round_trip", TestRegionGeneratedRoundTrip },
 		{ "region_overwrite_reuses_sectors", TestRegionOverwriteReusesSectors },
