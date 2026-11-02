@@ -224,11 +224,8 @@ void Lighter::UnlightAt(int _x, int _y, int _z, LightType _type, WorldManager& _
 	if (oldVal == 0)
 		return;
 
-	ChunkCache unlightCache;
-	unlightCache.Seed(chunk, _x >> 4, _z >> 4, _world);
-	chunk = unlightCache.grid[1][1];
-	if (!chunk)
-		return;
+	// ProcessUnlightQueue builds its own cache; seeding one here was dead work
+	// (eight chunk lookups) for every lit cell that gets removed.
 
 	// Block/meta and the untouched light channel aren't affected by the light
 	// write below, so grab them once now instead of re-reading after.
@@ -259,6 +256,10 @@ void Lighter::UnlightAt(int _x, int _y, int _z, LightType _type, WorldManager& _
 bool Lighter::ProcessUnlightQueue(WorldManager& _world, Chunk* _centerChunk) {
 	if (!HasPendingUnlight())
 		return false;
+	// Budget already spent this tick: leave the work queued without resolving
+	// the nine-chunk cache first.
+	if (unlightWorkThisTick >= unlightTickBudget)
+		return true;
 
 	ChunkCache unlightCache;
 	if (_centerChunk) {
