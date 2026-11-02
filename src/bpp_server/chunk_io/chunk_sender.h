@@ -15,6 +15,7 @@
 #include "tile_entities/tile_entity.h"
 #include "world/world.h"
 #include <algorithm>
+#include <cstdint>
 #include <future>
 #include <memory>
 #include <thread>
@@ -25,6 +26,7 @@
 // same chunk receive the same bbox and changes, so they can share one job.
 struct SubRegionKey {
 	Int32_2 chunk;
+	const Chunk* chunkPtr;
 	int32_t xmin, xmax, ymin, ymax, zmin, zmax;
 	size_t changesHash;
 
@@ -35,6 +37,7 @@ struct SubRegionKeyHasher {
 	size_t operator()(const SubRegionKey& _key) const noexcept {
 		size_t h = 0;
 		HashCombine(h, _key.chunk);
+		HashCombine(h, reinterpret_cast<uintptr_t>(_key.chunkPtr));
 		HashCombine(h, _key.xmin);
 		HashCombine(h, _key.xmax);
 		HashCombine(h, _key.ymin);
@@ -215,7 +218,7 @@ struct ChunkSender {
 		psr.header.size.y = static_cast<uint8_t>(ymax - ymin);
 		psr.header.size.z = static_cast<uint8_t>(zmax - zmin);
 		if (_chunkRef) {
-			const SubRegionKey key{ _chunk, xmin, xmax, ymin, ymax, zmin, zmax, changesHash };
+			const SubRegionKey key{ _chunk, _chunkRef.get(), xmin, xmax, ymin, ymax, zmin, zmax, changesHash };
 			auto [job, inserted] = tickSubRegions.try_emplace(key);
 			if (inserted) {
 				std::shared_ptr<const Chunk> ref = _chunkRef;
