@@ -116,6 +116,8 @@ void EntityTracker::TrackEntity(Entity* _entity) {
 	TrackedEntry entry;
 	entry.entity = _entity;
 	entry.profile = GetTrackingProfile(*_entity);
+	entry.isMobile = dynamic_cast<MobileEntity*>(_entity) != nullptr;
+	entry.isPlayer = _entity->type == EntityType::PLAYER;
 
 	entry.lastEncodedPos = QuantizePosition(_entity->position);
 	entry.lastBroadcastMotion = _entity->velocity;
@@ -164,6 +166,8 @@ void EntityTracker::AddPlayer(Entity* _player) {
 	TrackedEntry entry;
 	entry.entity = _player;
 	entry.profile = GetTrackingProfile(*_player);
+	entry.isMobile = true;
+	entry.isPlayer = true;
 
 	entry.lastEncodedPos = QuantizePosition(_player->position);
 	entry.lastBroadcastMotion = _player->velocity;
@@ -565,9 +569,10 @@ void EntityTracker::UpdateMetadataState(TrackedEntry& _trackedEntry) {
 	_trackedEntry.entity->wasMetadataUpdated = false;
 
 	// Send the packet to ourselves if we are a player
-	auto mpe = dynamic_cast<EntityMPPlayer*>(_trackedEntry.entity);
-	if (mpe && mpe->session) {
-		pkt.Serialize(mpe->session->stream);
+	if (_trackedEntry.isPlayer) {
+		auto* mpe = static_cast<EntityMPPlayer*>(_trackedEntry.entity);
+		if (mpe->session)
+			pkt.Serialize(mpe->session->stream);
 	}
 }
 
@@ -636,9 +641,7 @@ void EntityTracker::UpdateEquipmentState(TrackedEntry& _trackedEntry) {
 	}
 }
 
-void EntityTracker::FlushEventQueue(Entity& _entity) {
-	auto isPlayer = dynamic_cast<EntityMPPlayer*>(&_entity);
-
+void EntityTracker::FlushEventQueue(Entity& _entity, bool _isPlayer) {
 	while (_entity.pendingEvents.size() > 0) {
 		auto event = _entity.pendingEvents.back();
 		Packet::EntityEvent pkt;
@@ -647,8 +650,10 @@ void EntityTracker::FlushEventQueue(Entity& _entity) {
 
 		SendPacketToViewers(pkt, _entity.id);
 
-		if (isPlayer) {
-			pkt.Serialize(isPlayer->session->stream);
+		if (_isPlayer) {
+			auto* player = static_cast<EntityMPPlayer*>(&_entity);
+			if (player->session)
+				pkt.Serialize(player->session->stream);
 		}
 
 		_entity.pendingEvents.pop_back();
@@ -663,8 +668,8 @@ void EntityTracker::Update(TrackedEntry& _trackedEntry) {
 
 	// If we are a mobile entity then send our equipment
 	// TODO: Only send these if any of them have been updated
-	if (dynamic_cast<MobileEntity*>(entity)) {
-		FlushEventQueue(*entity);
+	if (_trackedEntry.isMobile) {
+		FlushEventQueue(*entity, _trackedEntry.isPlayer);
 		UpdateEquipmentState(_trackedEntry);
 		UpdateMetadataState(_trackedEntry);
 	}

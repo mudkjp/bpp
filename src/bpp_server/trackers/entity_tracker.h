@@ -48,6 +48,8 @@ struct TrackedEntry {
 	int32_t lastEncodedPitch = 0;
 	int updateCounter = 0;
 	int ticksSinceTeleport = 0;
+	bool isMobile = false;
+	bool isPlayer = false;
 	std::unordered_set<EntityId> visibleTo; // what player ids can see this entity
 };
 
@@ -98,7 +100,7 @@ struct EntityTracker {
 	void SendPacketToAllPlayers(Packet::BasePacket& _pkt);
 	TrackedEntry* GetTrackerForEntityId(EntityId _id);
 	void Update(TrackedEntry& _trackedEntry);
-	void FlushEventQueue(Entity& _entity);
+	void FlushEventQueue(Entity& _entity, bool _isPlayer);
 	void UpdateMetadataState(TrackedEntry& _trackedEntry);
 	void SendMetadataState(TrackedEntry& _trackedEntry, std::shared_ptr<PlayerSession> _targetSession);
 	void UpdateEquipmentState(TrackedEntry& _trackedEntry);
