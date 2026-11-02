@@ -720,6 +720,28 @@ void TestEntityIndex() {
 	CHECK(manager.entitiesById.empty());
 }
 
+void TestChunkInterestCache() {
+	WorldManager world;
+	std::vector<ClientPosition> players(1);
+	players[0].viewDistanceOverride = 1;
+
+	world.UpdateLoadRadius(players);
+	CHECK(world.chunks.contains(Int32_2{ 0, 0 }));
+	CHECK(world.chunks.contains(Int32_2{ 1, 1 }));
+	CHECK(!world.chunks.contains(Int32_2{ 2, 0 }));
+
+	players[0].pos.x = 32.0;
+	world.UpdateLoadRadius(players);
+	CHECK(world.chunks.contains(Int32_2{ 2, 0 }));
+	CHECK(world.chunks.contains(Int32_2{ 3, 1 }));
+	CHECK(!world.chunks.contains(Int32_2{ -1, 0 }));
+
+	// Repeating the same interest set must not resurrect or drop chunks.
+	world.UpdateLoadRadius(players);
+	CHECK(world.chunks.contains(Int32_2{ 2, 0 }));
+	CHECK(!world.chunks.contains(Int32_2{ -1, 0 }));
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -848,6 +870,7 @@ std::vector<TestCase> Tests() {
 		{ "skylight_map", TestSkylightMap },
 		{ "light_border_noop", TestLightBorderNoOpScheduling },
 		{ "chunk_cache_rolling", TestChunkCacheRolling },
+		{ "chunk_interest_cache", TestChunkInterestCache },
 		{ "chunk_light_emitters", TestChunkLightEmitters },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "entity_index", TestEntityIndex },
