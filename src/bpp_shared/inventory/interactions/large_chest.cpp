@@ -39,23 +39,55 @@ std::span<const DeltaSlot> LargeChestInventoryInteraction::TickDiff() {
 }
 
 void LargeChestInventoryInteraction::MergeInventories() {
+	// Access the two chest inventories directly instead of going through the
+	// InventoryLargeChest virtual wrappers for every slot.
+	ItemStack* dst = sharedInventory.slots.data();
+	const auto& upperSlots = chestInventory.upper->slots;
+	const auto& lowerSlots = chestInventory.lower->slots;
 	size_t slotCount = 0;
-	for (size_t i = 0; i < size_t(chestInventory.GetSizeInventory()); i++) {
-		auto* stack = chestInventory.GetStackInSlot(i);
-		sharedInventory.slots[slotCount++] = stack ? *stack : ItemStack{};
-	}
+	for (const auto& stack : upperSlots)
+		dst[slotCount++] = stack;
+	for (const auto& stack : lowerSlots)
+		dst[slotCount++] = stack;
 	for (size_t i = 9; i < 45; i++)
-		sharedInventory.slots[slotCount++] = playerInventory->slots[i];
+		dst[slotCount++] = playerInventory->slots[i];
 }
 
 void LargeChestInventoryInteraction::WriteBack() {
-	for (size_t i = 0; i < 54; i++) {
-		auto& slot = sharedInventory.slots[i];
-		ItemStack* ptr = slot.id != Items::Id::INVALID ? &slot : nullptr;
-		chestInventory.SetInventorySlotContents(i, ptr);
+	ItemStack* src = sharedInventory.slots.data();
+	auto& upper = *chestInventory.upper;
+	auto& lower = *chestInventory.lower;
+
+	// Only touch slots that actually changed, and notify each chest once
+	// instead of going through a virtual setter per slot.
+	bool upperChanged = false;
+	for (size_t i = 0; i < upper.slots.size(); ++i) {
+		if (upper.slots[i] == src[i])
+			continue;
+		upper.slots[i] = src[i];
+		upperChanged = true;
 	}
-	for (size_t i = 54; i < 90; i++)
-		playerInventory->slots[i - 54 + 9] = sharedInventory.slots[i];
+	bool lowerChanged = false;
+	for (size_t i = 0; i < lower.slots.size(); ++i) {
+		auto& dst = lower.slots[i];
+		const auto& value = src[upper.slots.size() + i];
+		if (dst == value)
+			continue;
+		dst = value;
+		lowerChanged = true;
+	}
+	if (upperChanged)
+		upper.OnInventoryChanged();
+	if (lowerChanged)
+		lower.OnInventoryChanged();
+
+	const size_t chestSlots = upper.slots.size() + lower.slots.size();
+	for (size_t i = 0; i < 36; ++i) {
+		auto& dst = playerInventory->slots[9 + i];
+		const auto& value = src[chestSlots + i];
+		if (dst != value)
+			dst = value;
+	}
 }
 
 void LargeChestInventoryInteraction::OnShiftClick(int _slot) {
