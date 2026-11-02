@@ -817,6 +817,55 @@ void TestPathfinderFlat() {
 		CHECK((path.back() == Int3{ 13, 4, 13 }));
 }
 
+void TestUnloadedChunkIndex() {
+	WorldManager world;
+	std::vector<ClientPosition> players(1);
+	players[0].viewDistanceOverride = 1;
+
+	world.UpdateLoadRadius(players);
+	CHECK_EQ(world.PendingLoadCount(), size_t(9));
+
+	// Make one chunk look finished and rebuild the external-reset path.
+	auto it = world.chunks.find(Int32_2{ 0, 0 });
+	CHECK(it != world.chunks.end());
+	if (it != world.chunks.end())
+		it->second->state.store(ChunkState::Generated);
+	world.RebuildUnloadedCandidates();
+	CHECK_EQ(world.PendingLoadCount(), size_t(8));
+
+	// Removing the player removes every non-spawn chunk and its index entry.
+	players.clear();
+	world.UpdateLoadRadius(players);
+	CHECK_EQ(world.PendingLoadCount(), size_t(0));
+}
+
+void TestPumpPipelineIndex() {
+	TempDir temp("pump-index");
+	const auto regionDir = temp.path / "region";
+	std::filesystem::create_directories(regionDir);
+	RegionManager regions;
+	CHECK(regions.Initialize(regionDir.string()));
+
+	WorldManager world;
+	world.regionManager = &regions;
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 0, 0 };
+	world.chunks[Int32_2{ 0, 0 }] = chunk;
+	world.TrackUnloadedChunk(Int32_2{ 0, 0 });
+	CHECK_EQ(world.PendingLoadCount(), size_t(1));
+
+	world.PumpPipeline({});
+	CHECK_EQ(world.PendingLoadCount(), size_t(0));
+	world.pool.wait();
+	world.DrainGenQueue();
+
+	auto it = world.chunks.find(Int32_2{ 0, 0 });
+	CHECK(it != world.chunks.end());
+	if (it != world.chunks.end())
+		CHECK(it->second->state.load() >= ChunkState::Generated);
+	regions.Release();
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -946,6 +995,8 @@ std::vector<TestCase> Tests() {
 		{ "light_border_noop", TestLightBorderNoOpScheduling },
 		{ "chunk_cache_rolling", TestChunkCacheRolling },
 		{ "chunk_interest_cache", TestChunkInterestCache },
+		{ "unloaded_chunk_index", TestUnloadedChunkIndex },
+		{ "pump_pipeline_index", TestPumpPipelineIndex },
 		{ "chunk_light_emitters", TestChunkLightEmitters },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "entity_index", TestEntityIndex },
@@ -1104,6 +1155,19 @@ void RunBenchmarks() {
 		interestWorld.InvalidateChunkInterest();
 		interestWorld.UpdateLoadRadius(interestPlayers);
 		return interestWorld.chunks.size();
+	});
+
+	WorldManager pipelineWorld;
+	for (int i = 0; i < 10000; ++i) {
+		auto chunk = std::make_shared<Chunk>();
+		chunk->cpos = { i % 100, i / 100 };
+		chunk->state.store(ChunkState::Generated);
+		pipelineWorld.chunks.emplace(chunk->cpos, std::move(chunk));
+	}
+	pipelineWorld.RebuildUnloadedCandidates();
+	Bench("pipeline_idle_10k", 0, [&] {
+		pipelineWorld.PumpPipeline({});
+		return pipelineWorld.chunks.size();
 	});
 
 	Runtime benchRuntime;
