@@ -207,6 +207,11 @@ void RegionManager::LoadChunk(const Int32_2 _cpos) {
 				FatalIo("GetChunk failed", _cpos);
 				return;
 			}
+			// Bake climate on the IO worker while the chunk is still private to
+			// this task. The first GetBiome/GetTemperatureAt would otherwise pay
+			// this cost on the tick thread.
+			if (world)
+				world->EnsureClimate(*chunk);
 			std::lock_guard lk(outChunksMutex);
 			outChunks[_cpos] = std::move(chunk);
 		} catch (const std::exception& e) {
