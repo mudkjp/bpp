@@ -64,6 +64,21 @@ void ChunkCache::Refresh(int _ncx, int _ncz, WorldManager& _world) {
 	cz = _ncz;
 }
 
+void ChunkCache::Seed(Chunk* _center, int _ncx, int _ncz, WorldManager& _world) {
+	auto fetch = [&](int _tcx, int _tcz) -> Chunk* {
+		Chunk* fetched = _world.GetChunkRaw({ _tcx, _tcz });
+		return (fetched && fetched->state.load(std::memory_order_acquire) >= ChunkState::Generated) ? fetched
+		                                                                                          : nullptr;
+	};
+	for (int dx = -1; dx <= 1; ++dx) {
+		for (int dz = -1; dz <= 1; ++dz) {
+			grid[dx + 1][dz + 1] = (dx == 0 && dz == 0) ? _center : fetch(_ncx + dx, _ncz + dz);
+		}
+	}
+	cx = _ncx;
+	cz = _ncz;
+}
+
 static inline int GetLightDirect(Chunk* _chunk, int _lx, int _y, int _lz, LightType _type) {
 	if (!_chunk || _y < 0 || _y >= CHUNK_HEIGHT)
 		return 0;
@@ -147,10 +162,11 @@ void Lighter::PropagateLightAt(int _x, int _y, int _z, LightType _type, WorldMan
 			                                   .light{ chunk->GetBlockLight({ lx, _y, lz }), uint8_t(newVal) } },
 			                     chunk->cpos);
 	} else {
-		int emitted = Blocks::lightEmissionTable[blockId];
-		if (opacity < 15) {
+		const int emitted = Blocks::lightEmissionTable[blockId];
+		if (opacity < 15 && emitted < 15) {
 			newVal = std::max<int>(emitted, scanBest() - opacity);
 		} else {
+			// Full-strength emitters do not need the six neighbour reads.
 			newVal = emitted;
 		}
 		int oldVal = chunk->GetBlockLight({ lx, _y, lz });
@@ -167,13 +183,18 @@ void Lighter::PropagateLightAt(int _x, int _y, int _z, LightType _type, WorldMan
 			    chunk->cpos);
 	}
 
+	// Cells at 0 or 1 cannot raise a neighbour (expected is 0), so skip the six
+	// neighbour reads entirely. This is common after an unlight/relight pass.
+	if (newVal <= 1)
+		return;
+
 	// Propagate to neighbors. Reuses the cached reads from scanBest() above
 	// when it ran (the common opacity < 15 case), so most neighbors here cost
 	// zero extra chunk-array lookups instead of a second GetLightDirect call.
+	const int expected = std::max<int>(0, newVal - 1);
 	auto maybeQueue = [&](int _nx, int _ny, int _nz, Chunk* _nc, int _nlx, int _nlz, int _i) {
 		if (_ny < 0 || _ny >= CHUNK_HEIGHT || !_nc)
 			return;
-		int expected = std::max<int>(0, newVal - 1);
 		if (neighbor(_i, _nc, _nlx, _ny, _nlz) < expected && PendingLightUpdates() < MAX_LIGHT_QUEUE)
 			lightQueue.push_back({ { _nx, _ny, _nz }, { _nx, _ny, _nz }, _type });
 	};
@@ -204,7 +225,7 @@ void Lighter::UnlightAt(int _x, int _y, int _z, LightType _type, WorldManager& _
 		return;
 
 	ChunkCache unlightCache;
-	unlightCache.Refresh(_x >> 4, _z >> 4, _world);
+	unlightCache.Seed(chunk, _x >> 4, _z >> 4, _world);
 	chunk = unlightCache.grid[1][1];
 	if (!chunk)
 		return;

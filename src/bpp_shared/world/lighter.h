@@ -75,6 +75,8 @@ struct ChunkCache {
 
 	// Refresh the entire 3x3 grid around (ncx, ncz) if the center has changed.
 	void Refresh(int _ncx, int _ncz, WorldManager& _world);
+	// Fill the grid with a known center chunk without re-fetching it.
+	void Seed(Chunk* _center, int _ncx, int _ncz, WorldManager& _world);
 };
 
 struct Lighter {
