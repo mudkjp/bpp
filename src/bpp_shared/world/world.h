@@ -39,6 +39,7 @@
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include "gamerules.h"
@@ -74,6 +75,9 @@ private:
 	// Sorted candidates for PopulateReady. Chunks stay here until populated or
 	// removed, so the tick path does not rebuild and sort all chunks.
 	std::set<std::pair<int, int>> populateFrontier;
+	// Positions currently in ChunkState::Loading. DrainLoadQueue only has to
+	// visit in-flight loads instead of scanning every chunk in the world.
+	std::unordered_set<Int32_2> loadingChunks;
 	std::unordered_map<Int32_2, std::vector<std::pair<Int3, Block>>> pendingBleedWrites;
 	std::mutex genDoneMutex;
 	std::deque<std::shared_ptr<Chunk>> genDoneQueue;
@@ -413,6 +417,9 @@ public:
 
 	size_t PendingLoadCount() const {
 		return unloadedChunkIndex.size();
+	}
+	size_t PendingLoadingCount() const {
+		return loadingChunks.size();
 	}
 	size_t PopulateFrontierCount() const {
 		return populateFrontier.size();

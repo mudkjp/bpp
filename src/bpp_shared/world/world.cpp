@@ -707,6 +707,7 @@ void WorldManager::DrainGenQueue() {
 void WorldManager::DrainLoadQueue() {
 	// Recover chunks whose load never produced a result (stuck Loading).
 	for (const Int32_2& pos : regionManager->TakeFailedLoads()) {
+		loadingChunks.erase(pos);
 		auto it = chunks.find(pos);
 		if (it == chunks.end())
 			continue;
@@ -716,13 +717,24 @@ void WorldManager::DrainLoadQueue() {
 		}
 	}
 
-	for (auto& [pos, chunk] : chunks) {
-		if (chunk->state.load(std::memory_order_acquire) != ChunkState::Loading)
+	// Only in-flight loads need checking. This used to scan every chunk in the
+	// world twice per tick even when nothing was loading.
+	for (auto loadingIt = loadingChunks.begin(); loadingIt != loadingChunks.end();) {
+		const Int32_2 pos = *loadingIt;
+		auto chunkIt = chunks.find(pos);
+		if (chunkIt == chunks.end() || !chunkIt->second ||
+		    chunkIt->second->state.load(std::memory_order_acquire) != ChunkState::Loading) {
+			loadingIt = loadingChunks.erase(loadingIt);
 			continue;
-		auto loaded = regionManager->GetChunk(pos);
-		if (!loaded)
-			continue;
+		}
 
+		auto loaded = regionManager->GetChunk(pos);
+		if (!loaded) {
+			++loadingIt;
+			continue;
+		}
+
+		auto& chunk = chunkIt->second;
 		bool wasSpawnChunk = chunk->spawnChunk;
 		chunk = std::move(loaded);
 		chunk->spawnChunk = wasSpawnChunk;
@@ -754,6 +766,8 @@ void WorldManager::DrainLoadQueue() {
 			SeedChunkLighting(chunk->cpos);
 			chunk->isModified = true;
 		}
+
+		loadingIt = loadingChunks.erase(loadingIt);
 	}
 }
 
@@ -823,9 +837,15 @@ void WorldManager::SeedChunkLighting(Int32_2 _pos) {
 
 void WorldManager::RebuildUnloadedCandidates() {
 	unloadedChunkIndex.clear();
+	loadingChunks.clear();
 	for (const auto& [pos, chunk] : chunks) {
-		if (chunk && chunk->state.load(std::memory_order_acquire) == ChunkState::Unloaded)
+		if (!chunk)
+			continue;
+		const auto state = chunk->state.load(std::memory_order_acquire);
+		if (state == ChunkState::Unloaded)
 			TrackUnloadedChunk(pos);
+		else if (state == ChunkState::Loading)
+			loadingChunks.insert(pos);
 	}
 }
 
@@ -905,6 +925,7 @@ void WorldManager::UpdateLoadRadius(const std::vector<ClientPosition>& _players)
 			InvalidateChunkCache();
 			unloadedChunkIndex.erase({ it->first.x, it->first.z });
 			populateFrontier.erase({ it->first.x, it->first.z });
+			loadingChunks.erase(it->first);
 			it = chunks.erase(it);
 			continue;
 		}
@@ -919,6 +940,7 @@ void WorldManager::UpdateLoadRadius(const std::vector<ClientPosition>& _players)
 		InvalidateChunkCache();
 		unloadedChunkIndex.erase({ it->first.x, it->first.z });
 		populateFrontier.erase({ it->first.x, it->first.z });
+		loadingChunks.erase(it->first);
 		it = chunks.erase(it);
 	}
 }
@@ -950,6 +972,7 @@ void WorldManager::PumpPipeline(const std::vector<ClientPosition>& _players) {
 		}
 		it->second->state.store(ChunkState::Loading, std::memory_order_release);
 		unloadedChunkIndex.erase({ _pos.x, _pos.z });
+		loadingChunks.insert(_pos);
 		regionManager->LoadChunk(_pos);
 		startedThisTick.insert(_pos);
 		return true;
@@ -1474,6 +1497,7 @@ void WorldManager::InitSpawn() {
 	chunks.clear(); // Clear all chunks so we can start fresh from the spawn area
 	unloadedChunkIndex.clear();
 	populateFrontier.clear();
+	loadingChunks.clear();
 	InvalidateChunkInterest();
 	InvalidateChunkCache();
 }
