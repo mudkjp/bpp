@@ -31,11 +31,24 @@ bool LargeChestInventoryInteraction::CanExist(PlayerEntity& _player) {
 void LargeChestInventoryInteraction::InitSnapshot() {
 	MergeInventories();
 	snapshot = sharedInventory.slots;
+	mirrorDirty = false;
 }
 
 std::span<const DeltaSlot> LargeChestInventoryInteraction::TickDiff() {
-	MergeInventories();
-	return InventoryInteraction::TickDiff();
+	dirtySlots.clear();
+	const bool changed =
+	    SyncSlots(sharedInventory.slots, 0, chestInventory.upper->slots, 0, 27, dirtySlots) |
+	    SyncSlots(sharedInventory.slots, 27, chestInventory.lower->slots, 0, 27, dirtySlots) |
+	    SyncSlots(sharedInventory.slots, 54, playerInventory->slots, 9, 45, dirtySlots);
+	if (!changed && !mirrorDirty) {
+		diffScratch.clear();
+		return {};
+	}
+	if (mirrorDirty) {
+		mirrorDirty = false;
+		return InventoryInteraction::TickDiff();
+	}
+	return EmitTrackedDiffs();
 }
 
 void LargeChestInventoryInteraction::MergeInventories() {
@@ -51,6 +64,7 @@ void LargeChestInventoryInteraction::MergeInventories() {
 		dst[slotCount++] = stack;
 	for (size_t i = 9; i < 45; i++)
 		dst[slotCount++] = playerInventory->slots[i];
+	mirrorDirty = true;
 }
 
 void LargeChestInventoryInteraction::WriteBack() {

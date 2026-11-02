@@ -18,8 +18,10 @@ struct LargeChestInventoryInteraction : InventoryInteraction {
 		LargeChestInventoryInteraction* owner = nullptr;
 		SharedInventory() : Inventory(90) {}
 		void OnInventoryChanged() override {
-			if (owner)
+			if (owner) {
+				owner->mirrorDirty = true;
 				owner->WriteBack();
+			}
 		}
 	} sharedInventory;
 
