@@ -1904,6 +1904,56 @@ void TestLightEditColumn() {
 	CHECK_EQ(int(chunk->GetSkyLight({ 8, 64, 8 })), 15);
 }
 
+void TestLightBorderUniformSlices() {
+	WorldManager world;
+	auto center = std::make_shared<Chunk>();
+	center->cpos = { 0, 0 };
+	center->state.store(ChunkState::Generated);
+	auto east = std::make_shared<Chunk>();
+	east->cpos = { 1, 0 };
+	east->state.store(ChunkState::Generated);
+	// A whole uniform slice of block light on the neighbour.
+	east->subChunks[6].FillBlockLight(15);
+	world.chunks[Int32_2{ 0, 0 }] = center;
+	world.chunks[Int32_2{ 1, 0 }] = east;
+
+	world.PropagateChunkLightBorders(Int32_2{ 0, 0 });
+	CHECK(world.lightManager.PendingLightUpdates() > 0);
+	world.lightManager.ProcessLightQueue(world, INT_MAX);
+	CHECK_EQ(int(center->GetBlockLight({ 15, 100, 8 })), 14);
+	CHECK_EQ(int(center->GetBlockLight({ 15, 96, 8 })), 14);
+	CHECK_EQ(int(center->GetBlockLight({ 15, 111, 8 })), 14);
+	CHECK(int(center->GetBlockLight({ 15, 112, 8 })) < 14);
+}
+
+void TestSeedLightingHeightGrid() {
+	auto buildWorld = [](WorldManager& _world, int _eastTop) {
+		for (int dx = -1; dx <= 1; ++dx) {
+			for (int dz = -1; dz <= 1; ++dz) {
+				auto chunk = std::make_shared<Chunk>();
+				chunk->cpos = { dx, dz };
+				chunk->state.store(ChunkState::Generated);
+				chunk->FillSlices(0, dx == 1 ? _eastTop : 63, BLOCK_STONE);
+				chunk->GenerateSkylightMap();
+				_world.chunks[Int32_2{ dx, dz }] = std::move(chunk);
+			}
+		}
+	};
+
+	WorldManager flatWorld;
+	buildWorld(flatWorld, 63);
+	// Equal-height neighbors need no sky regions.
+	flatWorld.SeedChunkLighting({ 0, 0 });
+	CHECK_EQ(flatWorld.lightManager.PendingLightUpdates(), size_t(0));
+
+	WorldManager tallWorld;
+	buildWorld(tallWorld, 79);
+	// The taller east chunks create sky regions across the shared borders.
+	tallWorld.SeedChunkLighting({ 0, 0 });
+	CHECK(tallWorld.lightManager.PendingLightUpdates() > 0);
+	tallWorld.lightManager.ProcessLightQueue(tallWorld, INT_MAX);
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -2120,6 +2170,8 @@ std::vector<TestCase> Tests() {
 		{ "loaded_chunk_climate", TestLoadedChunkClimateBaked },
 		{ "send_chat_fast_path", TestSendChatFastPath },
 		{ "light_edit_column", TestLightEditColumn },
+		{ "light_border_uniform", TestLightBorderUniformSlices },
+		{ "seed_lighting_height_grid", TestSeedLightingHeightGrid },
 		{ "command_literal_index", TestCommandLiteralIndex },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "collision_shape_storage", TestCollisionShapeStorage },
@@ -2272,6 +2324,26 @@ void RunBenchmarks() {
 	Bench("chunk_skylight_map", CHUNK_VOLUME, [&] {
 		skylit.GenerateSkylightMap();
 		return size_t(skylit.GetSkyLight({ 8, 64, 8 }));
+	});
+
+	WorldManager lightBorderWorld;
+	for (int dx = -1; dx <= 1; ++dx) {
+		for (int dz = -1; dz <= 1; ++dz) {
+			auto chunk = std::make_shared<Chunk>();
+			chunk->cpos = { dx, dz };
+			chunk->state.store(ChunkState::Generated);
+			chunk->FillSlices(0, 63, BLOCK_STONE);
+			chunk->GenerateSkylightMap();
+			lightBorderWorld.chunks[Int32_2{ dx, dz }] = std::move(chunk);
+		}
+	}
+	Bench("light_border_flat_3x3", 0, [&] {
+		lightBorderWorld.PropagateChunkLightBorders(Int32_2{ 0, 0 });
+		return lightBorderWorld.lightManager.PendingLightUpdates();
+	});
+	Bench("light_seed_flat_3x3", 0, [&] {
+		lightBorderWorld.SeedChunkLighting(Int32_2{ 0, 0 });
+		return lightBorderWorld.lightManager.PendingLightUpdates();
 	});
 
 	WorldManager lightEditWorld;
