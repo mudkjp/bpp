@@ -59,6 +59,13 @@ public:
 		static_assert(std::is_trivially_copyable_v<T>,
 		              "NetworkStream::Read<T>: use Read<std::string>() or Read<std::string>() for string types");
 		T buffer{};
+		// Inline most scalar reads. Packets are parsed one field at a time, so
+		// avoiding an out-of-line call per field matters on the packet path.
+		if (readPos + sizeof(T) <= readBuffer.size()) {
+			std::memcpy(&buffer, readBuffer.data() + readPos, sizeof(T));
+			readPos += sizeof(T);
+			return FromBigEndian(buffer);
+		}
 		ReadBytes(reinterpret_cast<uint8_t*>(&buffer), sizeof(T));
 		return FromBigEndian(buffer);
 	}
@@ -93,7 +100,17 @@ public:
 	size_t ReadBytes(uint8_t* _buf, size_t _len);
 
 	// Append bytes to the per-session write buffer (no syscall).
-	void WriteBytes(const uint8_t* _buf, size_t _len);
+	// Kept inline for the common no-pending-flush case; slow path in .cpp.
+	void WriteBytes(const uint8_t* _buf, size_t _len) {
+		if (connected.load(std::memory_order_relaxed) && writePos == 0 &&
+		    writeBuffer.size() + _len <= MAX_WRITE_BUFFER) {
+			const size_t old = writeBuffer.size();
+			writeBuffer.resize(old + _len);
+			std::memcpy(writeBuffer.data() + old, _buf, _len);
+			return;
+		}
+		WriteBytesSlow(_buf, _len);
+	}
 
 	// Handles Entity Metadata Interpreting
 	void ReadEntityMetadata(std::vector<PacketData::EntityMetadata::DataEntry>& _metadata);
@@ -136,6 +153,16 @@ public:
 	// Used for shared-packet broadcast: serialise once, copy to N sessions.
 	void WriteRaw(const uint8_t* _data, size_t _len) {
 		WriteBytes(_data, _len);
+	}
+
+	// Append bytes to the read buffer. Primarily for tests and packet fuzzing.
+	void AppendReadData(const uint8_t* _data, size_t _len) {
+		readBuffer.insert(readBuffer.end(), _data, _data + _len);
+	}
+	void ClearReadBuffer() {
+		readBuffer.clear();
+		readPos = 0;
+		shortRead = false;
 	}
 
 	// Read-only view of the whole write buffer. For a live stream this may
@@ -187,6 +214,9 @@ private:
 	size_t PendingWriteBytes() const {
 		return writeBuffer.size() - writePos;
 	}
+	// Slow path for WriteBytes: handles a partial flush, closed streams and
+	// write-buffer limits.
+	void WriteBytesSlow(const uint8_t* _buf, size_t _len);
 	void CompactWriteBuffer() {
 		if (writePos == 0)
 			return;

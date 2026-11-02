@@ -178,7 +178,7 @@ size_t NetworkStream::ReadBytes(uint8_t* _buf, size_t _len) {
 	return _len;
 }
 
-void NetworkStream::WriteBytes(const uint8_t* _buf, size_t _len) {
+void NetworkStream::WriteBytesSlow(const uint8_t* _buf, size_t _len) {
 	// Session was kicked or closed, skip
 	if (!connected)
 		return;
