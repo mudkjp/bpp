@@ -50,20 +50,34 @@ void CollectEntitiesInAabb(std::unordered_map<Int2, EntityContainer>& _container
 	bucketMinY = std::clamp(bucketMinY, 0, 9);
 	bucketMaxY = std::clamp(bucketMaxY, 0, 9);
 
+	auto process = [&](EntityContainer& container) {
+		for (int by = bucketMinY; by <= bucketMaxY; ++by) {
+			auto& list = _collidables ? container.buckets[by].worldCollidableEntities
+			                          : container.buckets[by].entities;
+			for (Entity* entity : list) {
+				if (_filter(*entity) && entity->collider.Intersects(_box))
+					_out.push_back(entity);
+			}
+		}
+	};
+
+	// For a large query over a sparse map, walking occupied containers is
+	// cheaper than hashing every empty chunk coordinate in the AABB.
+	const int64_t cells = (int64_t(blockMaxX) - blockMinX + 1) * (int64_t(blockMaxZ) - blockMinZ + 1);
+	if (cells > int64_t(_containers.size())) {
+		for (auto& [cpos, container] : _containers) {
+			if (cpos.x < blockMinX || cpos.x > blockMaxX || cpos.y < blockMinZ || cpos.y > blockMaxZ)
+				continue;
+			process(container);
+		}
+		return;
+	}
+
 	for (int x = blockMinX; x <= blockMaxX; ++x) {
 		for (int z = blockMinZ; z <= blockMaxZ; ++z) {
 			auto it = _containers.find({ x, z });
-			if (it == _containers.end())
-				continue;
-			auto& container = it->second;
-			for (int by = bucketMinY; by <= bucketMaxY; ++by) {
-				auto& list = _collidables ? container.buckets[by].worldCollidableEntities
-				                          : container.buckets[by].entities;
-				for (Entity* entity : list) {
-					if (_filter(*entity) && entity->collider.Intersects(_box))
-						_out.push_back(entity);
-				}
-			}
+			if (it != _containers.end())
+				process(it->second);
 		}
 	}
 }
@@ -80,25 +94,38 @@ bool AnyEntityInAabb(std::unordered_map<Int2, EntityContainer>& _containers, con
 	bucketMinY = std::clamp(bucketMinY, 0, 9);
 	bucketMaxY = std::clamp(bucketMaxY, 0, 9);
 
+	auto process = [&](EntityContainer& container) -> bool {
+		for (int by = bucketMinY; by <= bucketMaxY; ++by) {
+			auto& list = _collidables ? container.buckets[by].worldCollidableEntities
+			                          : container.buckets[by].entities;
+			for (Entity* entity : list) {
+				if (_filter(*entity) && entity->collider.Intersects(_box))
+					return true;
+			}
+		}
+		return false;
+	};
+
+	const int64_t cells = (int64_t(blockMaxX) - blockMinX + 1) * (int64_t(blockMaxZ) - blockMinZ + 1);
+	if (cells > int64_t(_containers.size())) {
+		for (auto& [cpos, container] : _containers) {
+			if (cpos.x < blockMinX || cpos.x > blockMaxX || cpos.y < blockMinZ || cpos.y > blockMaxZ)
+				continue;
+			if (process(container))
+				return true;
+		}
+		return false;
+	}
+
 	for (int x = blockMinX; x <= blockMaxX; ++x) {
 		for (int z = blockMinZ; z <= blockMaxZ; ++z) {
 			auto it = _containers.find({ x, z });
-			if (it == _containers.end())
-				continue;
-			auto& container = it->second;
-			for (int by = bucketMinY; by <= bucketMaxY; ++by) {
-				auto& list = _collidables ? container.buckets[by].worldCollidableEntities
-				                          : container.buckets[by].entities;
-				for (Entity* entity : list) {
-					if (_filter(*entity) && entity->collider.Intersects(_box))
-						return true;
-				}
-			}
+			if (it != _containers.end() && process(it->second))
+				return true;
 		}
 	}
 	return false;
 }
-
 } // namespace
 
 std::shared_ptr<PlayerEntity> EntityManager::GetPlayerWithName(std::string _name) {
