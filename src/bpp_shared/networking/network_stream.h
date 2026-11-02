@@ -149,6 +149,12 @@ public:
 		return PendingWriteBytes();
 	}
 
+	// Drop all pending bytes and reset the buffer cursor, keeping capacity.
+	void ClearWriteBuffer() {
+		writeBuffer.clear();
+		writePos = 0;
+	}
+
 	// Returns true if the *most recent* ReadBytes()-family call came up
 	// short (not enough buffered data), AND CLEARS the flag.
 	//
