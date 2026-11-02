@@ -24,6 +24,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -257,6 +258,13 @@ struct ErrorInfo {
 
 using ActionResult = std::expected<std::string, ErrorInfo>;
 
+struct TransparentStringHash {
+	using is_transparent = void;
+	size_t operator()(std::string_view _value) const noexcept {
+		return std::hash<std::string_view>{}(_value);
+	}
+};
+
 class BrigadierContext {
 private:
 	Node rootNode;
@@ -268,6 +276,7 @@ public:
 
 	BrigadierContext& add_command(Node cmd) {
 		rootNode.then(std::move(cmd));
+		RebuildRootLiteralIndex();
 		return *this;
 	}
 
@@ -518,9 +527,49 @@ private:
 		bool valueValid = true;
 	};
 
-	[[nodiscard]] static auto find_matching_child(const Node& parent, std::span<const std::string_view> tokens,
-	                                              size_t token_idx, std::string_view original = {}) -> ChildMatch {
+	using LiteralIndex = std::unordered_map<std::string, const Node*, TransparentStringHash, std::equal_to<>>;
+	// Built while the tree is registered, so command execution and suggestion
+	// are read-only and do not need locking. Only the command root gets an
+	// index: nested nodes rarely have more than a handful of literals, and
+	// mixed-type nodes must keep the ordered linear matcher.
+	LiteralIndex rootLiteralIndex;
+
+	void RebuildRootLiteralIndex() {
+		rootLiteralIndex.clear();
+		bool allLiterals = !rootNode.children.empty();
+		for (const auto& child : rootNode.children) {
+			if (child.type != NodeType::Literal) {
+				allLiterals = false;
+				break;
+			}
+		}
+		if (!allLiterals || rootNode.children.size() <= 8)
+			return;
+
+		rootLiteralIndex.reserve(rootNode.children.size());
+		for (const auto& child : rootNode.children)
+			rootLiteralIndex.try_emplace(child.name, &child);
+	}
+
+	[[nodiscard]] auto GetLiteralIndex(const Node& _parent) const -> const LiteralIndex* {
+		if (&_parent != &rootNode || rootLiteralIndex.empty())
+			return nullptr;
+		return &rootLiteralIndex;
+	}
+
+	[[nodiscard]] auto find_matching_child(const Node& parent, std::span<const std::string_view> tokens,
+	                                       size_t token_idx, std::string_view original = {}) const -> ChildMatch {
 		const auto& token = tokens[token_idx];
+
+		if (const LiteralIndex* literals = GetLiteralIndex(parent)) {
+			auto found = literals->find(token);
+			if (found == literals->end())
+				return {};
+			ChildMatch match;
+			match.node = found->second;
+			match.consumed = get_consumed_tokens(*match.node, tokens, token_idx);
+			return match;
+		}
 
 		for (const auto& child : parent.children) {
 			if (!matches_node_type(child, token))
