@@ -235,62 +235,69 @@ bool Region::AddChunk(std::shared_ptr<Chunk> _chunk, int64_t _timestamp,
 
 std::shared_ptr<Chunk> Region::GetChunk(Int32_2 _cpos, ReadStatus& _status) {
 	_status = ReadStatus::Error;
-	std::lock_guard<std::mutex> lock(mutex);
-	Int2 local{ _cpos.x & 31, _cpos.z & 31 };
-	int index = local.x + local.z * 32;
+	thread_local std::vector<uint8_t> compressed;
+	uint32_t offset = 0;
 
-	if (!ChunkExists(local)) {
-		_status = ReadStatus::Missing;
-		return nullptr;
+	{
+		std::lock_guard<std::mutex> lock(mutex);
+		Int2 local{ _cpos.x & 31, _cpos.z & 31 };
+		int index = local.x + local.z * 32;
+
+		if (!ChunkExists(local)) {
+			_status = ReadStatus::Missing;
+			return nullptr;
+		}
+
+		offset = regionHeader[index].offset;
+		if (offset == 0) {
+			_status = ReadStatus::Error;
+			return nullptr;
+		}
+
+		auto& file = regionFile.Get();
+		file.seekg(static_cast<std::streamoff>(offset) * SECTOR_SIZE);
+
+		// Read 4-byte length
+		uint32_t length = 0;
+		file.read(reinterpret_cast<char*>(&length), 4);
+		if (file.fail()) {
+			_status = ReadStatus::Error;
+			return nullptr;
+		}
+		length = FromBigEndian(length);
+
+		// Guard against corrupt/zero length before subtracting
+		if (length < 1) {
+			Logger::Warning << "Invalid chunk length: " << length << "\n";
+			_status = ReadStatus::Error;
+			return nullptr;
+		}
+
+		// Read compression type
+		CompressorFormat format = CompressorFormat::REGION_INVALID;
+		file.read(reinterpret_cast<char*>(&format), 1);
+		if (file.fail()) {
+			_status = ReadStatus::Error;
+			return nullptr;
+		}
+
+		if (format != CompressorFormat::REGION_ZLIB) {
+			Logger::Warning << "Unsupported compression format: " << int(format) << "\n";
+			_status = ReadStatus::Error;
+			return nullptr;
+		}
+
+		// Read compressed data (length includes the format byte, so actual data is length-1)
+		compressed.resize(length - 1);
+		file.read(reinterpret_cast<char*>(compressed.data()), length - 1);
+		if (file.fail()) {
+			_status = ReadStatus::Error;
+			return nullptr;
+		}
 	}
 
-	uint32_t offset = regionHeader[index].offset;
-	if (offset == 0) {
-		_status = ReadStatus::Error;
-		return nullptr;
-	}
-
-	auto& file = regionFile.Get();
-	file.seekg(static_cast<std::streamoff>(offset) * SECTOR_SIZE);
-
-	// Read 4-byte length
-	uint32_t length = 0;
-	file.read(reinterpret_cast<char*>(&length), 4);
-	if (file.fail()) {
-		_status = ReadStatus::Error;
-		return nullptr;
-	}
-	length = FromBigEndian(length);
-
-	// Guard against corrupt/zero length before subtracting
-	if (length < 1) {
-		Logger::Warning << "Invalid chunk length: " << length << "\n";
-		_status = ReadStatus::Error;
-		return nullptr;
-	}
-
-	// Read compression type
-	CompressorFormat format = CompressorFormat::REGION_INVALID;
-	file.read(reinterpret_cast<char*>(&format), 1);
-	if (file.fail()) {
-		_status = ReadStatus::Error;
-		return nullptr;
-	}
-
-	if (format != CompressorFormat::REGION_ZLIB) {
-		Logger::Warning << "Unsupported compression format: " << int(format) << "\n";
-		_status = ReadStatus::Error;
-		return nullptr;
-	}
-
-	// Read compressed data (length includes the format byte, so actual data is length-1)
-	std::vector<uint8_t> compressed(length - 1);
-	file.read(reinterpret_cast<char*>(compressed.data()), length - 1);
-	if (file.fail()) {
-		_status = ReadStatus::Error;
-		return nullptr;
-	}
-
+	// Decode outside the region lock so multiple I/O threads can load chunks
+	// from the same region in parallel.
 	auto result = DecodeNbtData(compressed);
 	if (result) {
 		if (result->cpos != _cpos) {
