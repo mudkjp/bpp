@@ -128,18 +128,24 @@ void EntitySpawner::TrySpawnEntities(WorldManager& _world, const std::vector<Cli
 	if (chunksToSpawnIn.empty())
 		return;
 
+	// Only resolve biomes if at least one category still has room to spawn.
+	std::vector<SpawnCategory*> activeCategories;
+	for (auto& category : this->categories) {
+		const int mobCap = category.cap * int(chunksToSpawnIn.size()) / 256;
+		if (GetCategoryCount(_world, category) <= mobCap)
+			activeCategories.push_back(&category);
+	}
+	if (activeCategories.empty())
+		return;
+
 	// Resolve each chunk's biome once per tick instead of once per category.
 	std::vector<std::pair<Int32_2, Biome>> spawnChunks;
 	spawnChunks.reserve(chunksToSpawnIn.size());
 	for (const auto& cpos : chunksToSpawnIn)
 		spawnChunks.emplace_back(cpos, _world.GetBiome({ cpos.x << 4, cpos.z << 4 }));
 
-	for (auto& category : this->categories) {
-		int mobCap = category.cap * int(chunksToSpawnIn.size()) / 256;
-
-		if (GetCategoryCount(_world, category) > mobCap)
-			continue;
-
+	for (SpawnCategory* categoryPtr : activeCategories) {
+		SpawnCategory& category = *categoryPtr;
 		for (const auto& [cpos, biome] : spawnChunks) {
 			const SpawnEntry* picked = PickWeighted(_world.rand, category, biome);
 
