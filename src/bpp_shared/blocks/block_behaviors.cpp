@@ -19,6 +19,7 @@ namespace Blocks {
 BlockBehavior blockBehaviors[BLOCK_MAX] = {};
 void (*onTickTable[BLOCK_MAX])(WorldManager&, Int3, uint8_t, Java::Random&) = {};
 CollisionShape (*colliderTable[BLOCK_MAX])(uint8_t) = {};
+void (*onNeighborTable[BLOCK_MAX])(WorldManager&, Int3, BlockType) = {};
 
 void RegisterBlockBehaviors() {
 	RegisterFluidBehaviors();
@@ -38,6 +39,7 @@ void RegisterBlockBehaviors() {
 	for (int i = 0; i < BLOCK_MAX; ++i) {
 		onTickTable[i] = blockBehaviors[i].onTick;
 		colliderTable[i] = blockBehaviors[i].getCollider;
+		onNeighborTable[i] = blockBehaviors[i].onNeighborBlockChange;
 	}
 }
 

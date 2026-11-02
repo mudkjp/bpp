@@ -874,6 +874,7 @@ void TestBlockLookupTables() {
 		CHECK_EQ(int(Blocks::ticksOnLoadTable[i]), Blocks::blockProperties[i].ticksOnLoad ? 1 : 0);
 		CHECK(Blocks::onTickTable[i] == Blocks::blockBehaviors[i].onTick);
 		CHECK(Blocks::colliderTable[i] == Blocks::blockBehaviors[i].getCollider);
+		CHECK(Blocks::onNeighborTable[i] == Blocks::blockBehaviors[i].onNeighborBlockChange);
 	}
 }
 
@@ -1578,6 +1579,16 @@ void RunBenchmarks() {
 	Bench("collision_stairs_sweep", 0, [&] {
 		auto boxes = collisionWorld.GetCollidingBoundingBoxes(collisionArea);
 		return boxes.size();
+	});
+
+	WorldManager neighborWorld;
+	auto neighborChunk = std::make_shared<Chunk>();
+	neighborChunk->cpos = { 0, 0 };
+	neighborChunk->state.store(ChunkState::Generated);
+	neighborWorld.chunks[Int32_2{ 0, 0 }] = neighborChunk;
+	Bench("neighbor_update_6", 0, [&] {
+		neighborWorld.NotifyNeighborsOfUpdate({ 8, 64, 8 }, BLOCK_STONE);
+		return size_t(6);
 	});
 
 	std::vector<std::unique_ptr<Entity>> massEntities;

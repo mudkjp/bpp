@@ -1556,11 +1556,24 @@ void WorldManager::NotifyNeighborsOfUpdate(Int3 _globalPos, BlockType _blockId) 
 	const Cardinal::Value dirs[6] = { Cardinal::Value::West, Cardinal::Value::East,  Cardinal::Value::Down,
 		                               Cardinal::Value::Up,   Cardinal::Value::North, Cardinal::Value::South };
 
+	// Most neighbors are in the same chunk. Resolve that chunk once instead of
+	// doing six separate chunk-map lookups through GetBlockId().
+	const Int32_2 centerPos{ _globalPos.x >> 4, _globalPos.z >> 4 };
+	Chunk* centerChunk = GetChunkRaw(centerPos);
+	if (centerChunk && centerChunk->state.load() < ChunkState::Generated)
+		centerChunk = nullptr;
+
+	auto getBlock = [&](Int3 _pos) -> BlockType {
+		if (centerChunk && (_pos.x >> 4) == centerPos.x && (_pos.z >> 4) == centerPos.z)
+			return centerChunk->GetBlock({ _pos.x & 15, _pos.y, _pos.z & 15 });
+		return GetBlockId(_pos);
+	};
+
 	// Notify neighbors
 	for (auto dir : dirs) {
 		Int3 newPos = _globalPos.WithOffset(dir);
-		auto block = this->GetBlockId(newPos);
-		auto updateFunction = Blocks::blockBehaviors[block].onNeighborBlockChange;
+		auto block = getBlock(newPos);
+		auto updateFunction = Blocks::onNeighborTable[block];
 		if (updateFunction)
 			updateFunction(*this, newPos, _blockId);
 	}
