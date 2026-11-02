@@ -28,6 +28,7 @@
 #include "java_math.h"
 #include "nbt/nbt.h"
 #include "networking/network_stream.h"
+#include "networking/packets.h"
 #include "numeric_structs.h"
 #include "pathfinding/pathfinder.h"
 #include "player_conn/player_session.h"
@@ -1230,6 +1231,53 @@ void TestConfigFixture() {
 	CHECK_EQ(reloaded.GetAsString("motd"), std::string("A fixture server  "));
 }
 
+void TestPacketRoundTrips() {
+	// Round-trip through an in-memory buffer using the same read/write path as
+	// a socket, so serializer and deserializer must agree on the wire layout.
+	auto roundTrip = [](Packet::BasePacket& _packet, Packet::BasePacket& _decoded) {
+		NetworkStream out(-1);
+		_packet.Serialize(out);
+		const auto& bytes = out.GetRawWriteBuffer();
+
+		NetworkStream in(-1);
+		in.AppendReadData(bytes.data(), bytes.size());
+		// The dispatcher consumes the packet id before calling Deserialize.
+		CHECK_EQ(int(in.Read<PacketId>()), int(bytes[0]));
+		_decoded.Deserialize(in);
+		CHECK(!in.IsShortRead());
+		CHECK_EQ(in.Mark(), bytes.size());
+	};
+
+	Packet::PlayerPosition position;
+	position.position = { 123.25, 64.5, -456.75 };
+	position.cameraY = 66.12;
+	position.onGround = true;
+	Packet::PlayerPosition positionDecoded;
+	roundTrip(position, positionDecoded);
+	CHECK_EQ(positionDecoded.position.x, 123.25);
+	CHECK_EQ(positionDecoded.position.y, 64.5);
+	CHECK_EQ(positionDecoded.position.z, -456.75);
+	CHECK_EQ(positionDecoded.cameraY, 66.12);
+	CHECK(positionDecoded.onGround);
+
+	Packet::ChatMessage chat;
+	chat.message = "héllo ☃ world";
+	Packet::ChatMessage chatDecoded;
+	roundTrip(chat, chatDecoded);
+	CHECK_EQ(chatDecoded.message, std::string("héllo ☃ world"));
+
+	Packet::SetBlock block;
+	block.position = { 12, 64, -7 };
+	block.block = { BLOCK_STONE, 3 };
+	Packet::SetBlock blockDecoded;
+	roundTrip(block, blockDecoded);
+	CHECK_EQ(blockDecoded.position.x, int32_t(12));
+	CHECK_EQ(int(blockDecoded.position.y), 64);
+	CHECK_EQ(blockDecoded.position.z, int32_t(-7));
+	CHECK_EQ(int(blockDecoded.block.type), int(BLOCK_STONE));
+	CHECK_EQ(int(blockDecoded.block.data), 3);
+}
+
 void TestNetworkStream() {
 #if defined(BPP_HAS_POSIX_SOCKETS)
 	int fds[2] = { -1, -1 };
@@ -1358,6 +1406,7 @@ std::vector<TestCase> Tests() {
 		{ "region_manager_save_queue", TestRegionManagerSaveQueue },
 		{ "recipe_mirror", TestRecipeMirror },
 		{ "config_fixture", TestConfigFixture },
+		{ "packet_round_trips", TestPacketRoundTrips },
 		{ "network_stream", TestNetworkStream },
 	};
 }
@@ -1924,6 +1973,77 @@ void RunBenchmarks() {
 		// Parse the serialized string back with the same big-endian layout.
 		const uint16_t length = uint16_t((uint16_t(bytes[0]) << 8) | bytes[1]);
 		return size_t(length);
+	});
+
+	Packet::PlayerPosition playerPosition;
+	playerPosition.position = { 123.25, 64.0, -456.5 };
+	playerPosition.cameraY = 65.62;
+	playerPosition.onGround = true;
+	NetworkStream packetStream(-1);
+	packetStream.ClearWriteBuffer();
+	playerPosition.Serialize(packetStream);
+	const auto playerPositionBytes = packetStream.GetRawWriteBuffer();
+	Bench("packet_player_position_serialize", playerPositionBytes.size(), [&] {
+		packetStream.ClearWriteBuffer();
+		playerPosition.Serialize(packetStream);
+		return packetStream.GetRawWriteBuffer().size();
+	});
+	NetworkStream packetReader(-1);
+	Bench("packet_player_position_deserialize", playerPositionBytes.size(), [&] {
+		packetReader.ClearReadBuffer();
+		packetReader.AppendReadData(playerPositionBytes.data(), playerPositionBytes.size());
+		Packet::PlayerPosition pkt;
+		pkt.Deserialize(packetReader);
+		return pkt.onGround ? size_t(1) : size_t(0);
+	});
+
+	Packet::ChatMessage chatPacket;
+	chatPacket.message = networkText;
+	packetStream.ClearWriteBuffer();
+	chatPacket.Serialize(packetStream);
+	const auto chatBytes = packetStream.GetRawWriteBuffer();
+	Bench("packet_chat_serialize", chatBytes.size(), [&] {
+		packetStream.ClearWriteBuffer();
+		chatPacket.Serialize(packetStream);
+		return packetStream.GetRawWriteBuffer().size();
+	});
+	Bench("packet_chat_deserialize", chatBytes.size(), [&] {
+		packetReader.ClearReadBuffer();
+		packetReader.AppendReadData(chatBytes.data(), chatBytes.size());
+		Packet::ChatMessage pkt;
+		pkt.Deserialize(packetReader);
+		return pkt.message.size();
+	});
+
+	Packet::SetBlock blockPacket;
+	blockPacket.block = { BLOCK_STONE, 3 };
+	blockPacket.position = { 12, 64, -7 };
+	packetStream.ClearWriteBuffer();
+	blockPacket.Serialize(packetStream);
+	const auto blockBytes = packetStream.GetRawWriteBuffer();
+	Bench("packet_set_block_serialize", blockBytes.size(), [&] {
+		packetStream.ClearWriteBuffer();
+		blockPacket.Serialize(packetStream);
+		return packetStream.GetRawWriteBuffer().size();
+	});
+	Bench("packet_set_block_deserialize", blockBytes.size(), [&] {
+		packetReader.ClearReadBuffer();
+		packetReader.AppendReadData(blockBytes.data(), blockBytes.size());
+		Packet::SetBlock pkt;
+		pkt.Deserialize(packetReader);
+		return size_t(int(pkt.block.type));
+	});
+
+	Packet::ChatMessage shortChat;
+	shortChat.message = "the quick brown fox jumps";
+	Bench("packet_burst_mixed", 0, [&] {
+		packetStream.ClearWriteBuffer();
+		for (int i = 0; i < 100; ++i) {
+			playerPosition.Serialize(packetStream);
+			shortChat.Serialize(packetStream);
+			blockPacket.Serialize(packetStream);
+		}
+		return packetStream.GetRawWriteBuffer().size();
 	});
 
 	std::cout << "BENCH sink=" << benchSink << "\n";
