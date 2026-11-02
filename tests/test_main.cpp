@@ -1067,6 +1067,11 @@ void TestEntityAabbQueries() {
 	auto allocating = manager.GetEntitiesWithinAabb(nearBox);
 	manager.GetEntitiesWithinAabb(nearBox, out);
 	CHECK_EQ(allocating.size(), out.size());
+
+	const AABB hugeBox{ -10000.0, -10000.0, -10000.0, 10000.0, 10000.0, 10000.0 };
+	manager.GetEntitiesWithinAabb(hugeBox, out);
+	CHECK_EQ(out.size(), size_t(3));
+	CHECK(manager.AnyEntityWithinAabb(hugeBox));
 }
 
 void TestTrackerMassDespawn() {
@@ -1454,6 +1459,18 @@ void RunBenchmarks() {
 	});
 	Bench("aabb_query_any", 0, [&] {
 		return aabbManager.AnyEntityWithinAabb(aabbBox) ? size_t(1) : size_t(0);
+	});
+	const AABB largeAabb{ -10000.0, -10000.0, -10000.0, 10000.0, 10000.0, 10000.0 };
+	Bench("aabb_query_large_allocate", 0, [&] {
+		auto result = aabbManager.GetEntitiesWithinAabb(largeAabb);
+		return result.size();
+	});
+	Bench("aabb_query_large_reuse", 0, [&] {
+		aabbManager.GetEntitiesWithinAabb(largeAabb, aabbOut);
+		return aabbOut.size();
+	});
+	Bench("aabb_query_large_any", 0, [&] {
+		return aabbManager.AnyEntityWithinAabb(largeAabb) ? size_t(1) : size_t(0);
 	});
 
 	trackerPlayer->position.x = 0.0;
