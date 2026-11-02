@@ -34,13 +34,12 @@
 #include "username.h"
 
 std::shared_ptr<PlayerEntity> EntityManager::GetPlayerWithName(std::string _name) {
-	// I hate this
 	for (const auto& playerWeak : players) {
 		if (auto playerEntity = playerWeak.lock()) {
-			if (auto player = std::dynamic_pointer_cast<PlayerEntity>(playerEntity)) {
-				if (UsernameEquals(player->username, _name)) {
-					return player;
-				}
+			// The players list only ever contains PLAYER entities.
+			auto player = std::static_pointer_cast<PlayerEntity>(playerEntity);
+			if (UsernameEquals(player->username, _name)) {
+				return player;
 			}
 		}
 	}
@@ -53,7 +52,7 @@ void EntityManager::AlertWolves(PlayerEntity& _player, Entity& _target, bool _ig
 
 	auto wolf = dynamic_cast<WolfEntity*>(&_target);
 	if (wolf) {
-		if (wolf->IsTamed() && NormalizeUsername(_player.username) == NormalizeUsername(wolf->ownerUsername))
+		if (wolf->IsTamed() && UsernameEquals(_player.username, wolf->ownerUsername))
 			return;
 	}
 
@@ -72,7 +71,7 @@ void EntityManager::AlertWolves(PlayerEntity& _player, Entity& _target, bool _ig
 			continue;
 		if (wolfCandidate->attackTarget.lock())
 			continue;
-		if (NormalizeUsername(_player.username) != NormalizeUsername(wolfCandidate->ownerUsername))
+		if (!UsernameEquals(_player.username, wolfCandidate->ownerUsername))
 			continue;
 		if (_ignoreSitting && wolfCandidate->isSitting)
 			continue;
@@ -510,7 +509,7 @@ std::vector<Tag> EntityManager::CollectEntitiesForSave(Int2 _cpos, bool _clearCo
 			auto compound = entityPtr->SerializeToNbt();
 			if (!compound)
 				continue; // If something went wrong abort save
-			collectedEntities.push_back(*compound);
+			collectedEntities.push_back(std::move(*compound));
 		}
 	}
 

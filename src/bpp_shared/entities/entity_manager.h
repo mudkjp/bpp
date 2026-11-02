@@ -10,6 +10,7 @@
 #include "logger/logger.h"
 #include "tick_profiler.h"
 #include <functional>
+#include <limits>
 #include <memory>
 
 struct EntityBucket {
@@ -142,16 +143,18 @@ public:
 
 	template <typename T>
 	std::shared_ptr<Entity> GetClosestPlayerWithin(T _pos, int _distance) {
-		double minDist = 0;
+		const Vec3 point{ double(_pos.x), double(_pos.y), double(_pos.z) };
+		const double maxDistSq = _distance < 0 ? -1.0 : double(_distance) * double(_distance);
+		double minDistSq = std::numeric_limits<double>::max();
 		std::shared_ptr<Entity> closestPlayer = nullptr;
 
 		for (const auto& playerWeak : players) {
 			if (auto player = playerWeak.lock()) {
-				double dist = Vec3{ double(_pos.x), double(_pos.y), double(_pos.z) }.Distance(player->position);
-				if ((_distance < 0 || dist <= _distance) && (minDist == 0 || dist < minDist)) {
-					minDist = dist;
+				const double distSq = point.DistanceSquared(player->position);
+				if ((maxDistSq < 0.0 || distSq <= maxDistSq) && distSq < minDistSq) {
+					minDistSq = distSq;
 					closestPlayer = player;
-					if (dist == 0)
+					if (distSq == 0.0)
 						break;
 				}
 			}

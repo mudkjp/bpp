@@ -115,8 +115,10 @@ int EntitySpawner::GetCategoryCount(WorldManager& _world, SpawnCategory& _catego
 	for (auto& spawnType : _category.GetSpawnSpawnListForBiome(BIOME_NONE)) {
 		types.insert(spawnType.entityPtrShared->type);
 	}
-	for (auto& type : types)
-		count += _world.entityManager.CountEntitiesOfType(type);
+	for (const auto& entity : _world.entityManager.entities) {
+		if (types.contains(entity->type))
+			++count;
+	}
 	return count;
 }
 
