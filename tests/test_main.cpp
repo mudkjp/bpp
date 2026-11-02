@@ -2112,6 +2112,105 @@ void TestDirtyChunkIndex() {
 	regions.Release();
 }
 
+void TestSaveChunkBudget() {
+	TempDir temp("save-budget");
+	const auto regionDir = temp.path / "region";
+	std::filesystem::create_directories(regionDir);
+	RegionManager regions;
+	CHECK(regions.Initialize(regionDir.string()));
+
+	WorldManager world;
+	world.regionManager = &regions;
+	for (int i = 0; i < 50; ++i) {
+		auto chunk = std::make_shared<Chunk>();
+		chunk->cpos = { i % 8, i / 8 };
+		chunk->state.store(ChunkState::Generated);
+		chunk->SetBlockRaw({ 0, 0, 0 }, BLOCK_STONE);
+		world.chunks[chunk->cpos] = chunk;
+		world.AttachChunk(*chunk);
+		chunk->MarkModified();
+	}
+	CHECK_EQ(world.DirtyChunkCount(), size_t(50));
+
+	// A bounded autosave snapshots only a few chunks, leaving the rest dirty.
+	world.SaveChunks(false, false, 7);
+	CHECK_EQ(world.DirtyChunkCount(), size_t(43));
+	CHECK_EQ(regions.saveQueue.size(), size_t(7));
+	world.SaveChunks(false, false, 7);
+	CHECK_EQ(world.DirtyChunkCount(), size_t(36));
+	CHECK_EQ(regions.saveQueue.size(), size_t(14));
+
+	// Subsequent autosaves keep draining the backlog.
+	size_t calls = 0;
+	while (world.DirtyChunkCount() > 0 && calls < 100) {
+		world.SaveChunks(false, false, 7);
+		++calls;
+	}
+	CHECK_EQ(world.DirtyChunkCount(), size_t(0));
+	CHECK_EQ(regions.saveQueue.size(), size_t(50));
+	CHECK(calls <= 8);
+	for (auto& [pos, chunk] : world.chunks)
+		CHECK(!chunk->isModified);
+
+	// An unbounded call is still available for shutdown.
+	world.chunks.begin()->second->MarkModified();
+	world.SaveChunks(false, false);
+	CHECK_EQ(world.DirtyChunkCount(), size_t(0));
+	// Re-saving an already queued chunk replaces its snapshot.
+	CHECK_EQ(regions.saveQueue.size(), size_t(50));
+
+	regions.FlushAll();
+	regions.Release();
+}
+
+void TestRegionWriteOrdering() {
+	TempDir temp("region-ordering");
+	const auto target = temp.path / "r.0.0.mcr";
+	{
+		std::ofstream file(target, std::ios::binary);
+		std::string zeros(8192, '\0');
+		file.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
+	}
+	Region region(Int32_2{ 0, 0 }, temp.path.string());
+
+	auto makeChunk = [](BlockType _block) {
+		auto chunk = std::make_shared<Chunk>();
+		chunk->cpos = { 0, 0 };
+		chunk->SetBlockRaw({ 7, 42, 9 }, _block);
+		return chunk;
+	};
+	auto stone = makeChunk(BLOCK_STONE);
+	auto glass = makeChunk(BLOCK_GLASS);
+	const auto stonePayload = region.EncodeNbtData(stone, 10, nullptr);
+	const auto glassPayload = region.EncodeNbtData(glass, 20, nullptr);
+	CHECK(!stonePayload.empty());
+	CHECK(!glassPayload.empty());
+
+	auto blockAt = [&]() {
+		Region::ReadStatus status = Region::ReadStatus::Error;
+		auto loaded = region.GetChunk(Int32_2{ 0, 0 }, status);
+		CHECK_EQ(status, Region::ReadStatus::Ok);
+		return loaded ? int(loaded->GetBlock({ 7, 42, 9 })) : -1;
+	};
+
+	CHECK(region.AddEncodedChunk(stonePayload, Int32_2{ 0, 0 }, 10));
+	CHECK_EQ(blockAt(), int(BLOCK_STONE));
+	CHECK(region.AddEncodedChunk(glassPayload, Int32_2{ 0, 0 }, 20));
+	CHECK_EQ(blockAt(), int(BLOCK_GLASS));
+
+	// A slow worker carrying an older snapshot must not overwrite newer data.
+	CHECK(region.AddEncodedChunk(stonePayload, Int32_2{ 0, 0 }, 15));
+	CHECK_EQ(blockAt(), int(BLOCK_GLASS));
+
+	// A genuinely newer snapshot is accepted.
+	CHECK(region.AddEncodedChunk(stonePayload, Int32_2{ 0, 0 }, 25));
+	CHECK_EQ(blockAt(), int(BLOCK_STONE));
+
+	// Timestamp 0 disables ordering for callers that do not track ticks.
+	CHECK(region.AddEncodedChunk(glassPayload, Int32_2{ 0, 0 }));
+	CHECK_EQ(blockAt(), int(BLOCK_GLASS));
+}
+
 void TestLightPropagationEarlyOut() {
 	WorldManager world;
 	auto chunk = std::make_shared<Chunk>();
@@ -2573,6 +2672,8 @@ std::vector<TestCase> Tests() {
 		{ "large_chest_interaction", TestLargeChestInteraction },
 		{ "large_chest_mirror_sync", TestLargeChestMirrorSync },
 		{ "dirty_chunk_index", TestDirtyChunkIndex },
+		{ "save_chunk_budget", TestSaveChunkBudget },
+		{ "region_write_ordering", TestRegionWriteOrdering },
 		{ "container_mirror_sync", TestContainerMirrorSync },
 		{ "player_save_queue", TestPlayerSaveQueue },
 		{ "command_parsing", TestCommandParsing },
@@ -2697,6 +2798,41 @@ void RunBenchmarks() {
 		skylit.GenerateSkylightMap();
 		return size_t(skylit.GetSkyLight({ 8, 64, 8 }));
 	});
+
+	TempDir saveBurstTemp("save-burst-bench");
+	const auto saveBurstDir = saveBurstTemp.path / "region";
+	std::filesystem::create_directories(saveBurstDir);
+	RegionManager saveBurstRegions;
+	saveBurstRegions.Initialize(saveBurstDir.string());
+	WorldManager saveBurstWorld;
+	saveBurstWorld.regionManager = &saveBurstRegions;
+	for (int i = 0; i < 1000; ++i) {
+		auto chunk = std::make_shared<Chunk>();
+		chunk->cpos = { i % 32, i / 32 };
+		chunk->state.store(ChunkState::Generated);
+		saveBurstWorld.chunks[chunk->cpos] = chunk;
+		saveBurstWorld.AttachChunk(*chunk);
+	}
+	auto dirtyAllBurst = [&] {
+		for (auto& [pos, chunk] : saveBurstWorld.chunks) {
+			chunk->isModified = false;
+			chunk->MarkModified();
+		}
+		saveBurstRegions.saveQueue.clear();
+		saveBurstRegions.pendingWrites.clear();
+	};
+	Bench("autosave_burst_1000_unbounded", 0, [&] {
+		dirtyAllBurst();
+		saveBurstWorld.SaveChunks(false, false);
+		return saveBurstRegions.saveQueue.size();
+	});
+	Bench("autosave_burst_1000_batch16", 0, [&] {
+		dirtyAllBurst();
+		saveBurstWorld.SaveChunks(false, false, 16);
+		return saveBurstRegions.saveQueue.size();
+	});
+	saveBurstRegions.saveQueue.clear();
+	saveBurstRegions.pendingWrites.clear();
 
 	WorldManager unlightBudgetWorld;
 	auto unlightBudgetChunk = std::make_shared<Chunk>();
@@ -3676,6 +3812,11 @@ void RunBenchmarks() {
 	rewriteRegion.AddEncodedChunk(rewritePayload, Int32_2{ 0, 0 });
 	Bench("region_addchunk_encoded_rewrite", rewritePayload.size(), [&] {
 		rewriteRegion.AddEncodedChunk(rewritePayload, Int32_2{ 0, 0 });
+		return size_t(1);
+	});
+	rewriteRegion.AddEncodedChunk(rewritePayload, Int32_2{ 0, 0 }, 1000);
+	Bench("region_addchunk_stale_reject", 0, [&] {
+		rewriteRegion.AddEncodedChunk(rewritePayload, Int32_2{ 0, 0 }, 1);
 		return size_t(1);
 	});
 
