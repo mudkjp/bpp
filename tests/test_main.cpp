@@ -43,6 +43,7 @@
 #include "pathfinding/pathfinder.h"
 #include "player_conn/player_session.h"
 #include "runtime.h"
+#include "trackers/window0_sync.h"
 #include "tile_entities/tile_entity_chest.h"
 #include "tile_entities/tile_entity_dispenser.h"
 #include "tile_entities/tile_entity_furnace.h"
@@ -2160,6 +2161,50 @@ void TestUnlightLavaPool() {
 	CHECK_EQ(world.lightManager.PendingLightUpdates(), size_t(0));
 }
 
+void TestWindow0ContainerSkip() {
+	Runtime runtime;
+	PlayerSession session(-1, runtime);
+	session.inventoryInteraction.InitSnapshot();
+
+	auto chest = std::make_shared<TileEntityChest>(Int3{ 0, 64, 0 });
+	session.activeInteraction = std::make_unique<ChestInventoryInteraction>(&session.inventory, chest);
+	session.activeInteraction->InitSnapshot();
+	CHECK(!InventoryTracker::ShouldDiffWindow0(session));
+
+	// Armor and main-inventory changes while a container is open must not be
+	// sent on the hidden window-0.
+	session.inventory.slots[5] = ItemStack{ ItemId(5), 1, 0 };
+	session.inventory.slots[9] = ItemStack{ ItemId(6), 2, 0 };
+	session.stream.ClearWriteBuffer();
+	// The container's own diff keeps its mirrored player slots current.
+	session.activeInteraction->TickDiff();
+
+	session.activeInteraction.reset();
+	CHECK(InventoryTracker::ShouldDiffWindow0(session));
+	InventoryTracker::SendWindow0Diff(session);
+
+	const auto& bytes = session.stream.GetRawWriteBuffer();
+	NetworkStream in(-1);
+	in.AppendReadData(bytes.data(), bytes.size());
+	std::vector<std::pair<int16_t, ItemId>> seen;
+	while (in.Mark() < bytes.size()) {
+		CHECK_EQ(int(in.Read<PacketId>()), int(PacketId::SetSlot));
+		Packet::SetSlot pkt;
+		pkt.Deserialize(in);
+		seen.emplace_back(pkt.slotId.value, pkt.item.id);
+	}
+	CHECK_EQ(seen.size(), size_t(2));
+	CHECK_EQ(seen[0].first, int16_t(5));
+	CHECK_EQ(seen[0].second, ItemId(5));
+	CHECK_EQ(seen[1].first, int16_t(9));
+	CHECK_EQ(seen[1].second, ItemId(6));
+
+	// The snapshot caught up, so the next diff is empty.
+	session.stream.ClearWriteBuffer();
+	InventoryTracker::SendWindow0Diff(session);
+	CHECK(session.stream.GetRawWriteBuffer().empty());
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -2382,6 +2427,7 @@ std::vector<TestCase> Tests() {
 		{ "light_queue_budget_convergence", TestLightQueueBudgetConvergence },
 		{ "light_propagation_early_out", TestLightPropagationEarlyOut },
 		{ "unlight_lava_pool", TestUnlightLavaPool },
+		{ "window0_container_skip", TestWindow0ContainerSkip },
 		{ "command_literal_index", TestCommandLiteralIndex },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "collision_shape_storage", TestCollisionShapeStorage },
@@ -2745,6 +2791,26 @@ void RunBenchmarks() {
 			slot = fill ? ItemStack{ ItemId(5), 1, 0 } : ItemStack{};
 		return diffInteraction.TickDiff().size();
 	});
+
+	{
+		Runtime windowRuntime;
+		PlayerSession windowSession(-1, windowRuntime);
+		windowSession.inventoryInteraction.InitSnapshot();
+		Bench("window0_diff_unchanged", 0, [&] {
+			windowSession.stream.ClearWriteBuffer();
+			InventoryTracker::SendWindow0Diff(windowSession);
+			return windowSession.stream.GetRawWriteBuffer().size();
+		});
+
+		auto windowChest = std::make_shared<TileEntityChest>(Int3{ 0, 64, 0 });
+		windowSession.activeInteraction =
+		    std::make_unique<ChestInventoryInteraction>(&windowSession.inventory, windowChest);
+		Bench("window0_skip_open", 0, [&] {
+			if (InventoryTracker::ShouldDiffWindow0(windowSession))
+				InventoryTracker::SendWindow0Diff(windowSession);
+			return windowSession.stream.GetRawWriteBuffer().size();
+		});
+	}
 
 	InventoryPlayer mirrorPlayer;
 	auto mirrorChest = std::make_shared<TileEntityChest>(Int3{ 0, 64, 0 });
