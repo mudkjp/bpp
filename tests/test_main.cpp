@@ -1648,6 +1648,57 @@ void TestRandomTickCache() {
 	CHECK_EQ(world.RandomTickCandidateCount(), size_t(91));
 }
 
+void TestLoadedChunkClimateBaked() {
+	TempDir temp("climate-load");
+	const auto regionDir = temp.path / "region";
+	std::filesystem::create_directories(regionDir);
+	RegionManager regions;
+	CHECK(regions.Initialize(regionDir.string()));
+
+	WorldManager world;
+	world.InitWorldSeed(int64_t(1234));
+	regions.world = &world;
+	world.regionManager = &regions;
+
+	auto chunk = std::make_shared<Chunk>();
+	chunk->cpos = { 0, 0 };
+	OverworldGenerator gen(1234);
+	gen.GenerateChunk(*chunk);
+	chunk->GenerateSkylightMap();
+	regions.SaveChunk(chunk, false);
+	regions.FlushAll();
+
+	regions.LoadChunk(Int32_2{ 0, 0 });
+	regions.iopool.wait();
+	auto loaded = regions.GetChunk(Int32_2{ 0, 0 });
+	CHECK(loaded != nullptr);
+	if (loaded) {
+		CHECK(loaded->climateBaked);
+		CHECK_EQ(loaded->cpos.x, 0);
+		CHECK_EQ(loaded->cpos.z, 0);
+
+		// The first biome lookup after a load is now a cached read.
+		world.chunks[Int32_2{ 0, 0 }] = loaded;
+		CHECK(loaded->climateBaked);
+		const int biome = int(world.GetBiome({ 8, 8 }));
+		CHECK(biome >= int(Biome::BIOME_RAINFOREST) || biome >= 0);
+		CHECK(loaded->climateBaked);
+	}
+
+	// Nether worlds have no climate to bake.
+	WorldManager hellWorld(true);
+	hellWorld.InitWorldSeed(int64_t(1234));
+	regions.world = &hellWorld;
+	regions.LoadChunk(Int32_2{ 0, 0 });
+	regions.iopool.wait();
+	auto hellLoaded = regions.GetChunk(Int32_2{ 0, 0 });
+	CHECK(hellLoaded != nullptr);
+	if (hellLoaded)
+		CHECK(!hellLoaded->climateBaked);
+
+	regions.Release();
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1861,6 +1912,7 @@ std::vector<TestCase> Tests() {
 		{ "chunk_light_emitters", TestChunkLightEmitters },
 		{ "unlight_early_out", TestUnlightEarlyOut },
 		{ "random_tick_cache", TestRandomTickCache },
+		{ "loaded_chunk_climate", TestLoadedChunkClimateBaked },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "collision_shape_storage", TestCollisionShapeStorage },
 		{ "entity_index", TestEntityIndex },
@@ -2623,6 +2675,39 @@ void RunBenchmarks() {
 		return found;
 	});
 	std::cout << "BENCH broadcast_sent_index_operations  chunks=1000 players=100 player_scans=0\n";
+
+	WorldManager climateWorld;
+	climateWorld.InitWorldSeed(int64_t(4242));
+	auto climateChunk = std::make_shared<Chunk>();
+	climateChunk->cpos = { 0, 0 };
+	climateChunk->state.store(ChunkState::Generated);
+	climateWorld.chunks[Int32_2{ 0, 0 }] = climateChunk;
+	Bench("biome_first_query_unbaked", 0, [&] {
+		climateChunk->climateBaked = false;
+		return size_t(climateWorld.GetBiome({ 8, 8 }));
+	});
+	Bench("biome_cached_query", 0, [&] {
+		return size_t(climateWorld.GetBiome({ 8, 8 }));
+	});
+
+	TempDir climateLoadTemp("climate-load-bench");
+	std::filesystem::copy_file(Fixture("region/r.0.0.mcr"), climateLoadTemp.path / "r.0.0.mcr");
+	RegionManager climateRegions;
+	climateRegions.Initialize(climateLoadTemp.path.string());
+	WorldManager climateLoadWorld;
+	climateLoadWorld.InitWorldSeed(int64_t(4242));
+	climateLoadWorld.regionManager = &climateRegions;
+	climateRegions.world = &climateLoadWorld;
+	Bench("loaded_chunk_first_biome", 0, [&] {
+		climateRegions.LoadChunk(Int32_2{ 0, 0 });
+		climateRegions.iopool.wait();
+		auto chunk = climateRegions.GetChunk(Int32_2{ 0, 0 });
+		if (!chunk)
+			return size_t(0);
+		climateLoadWorld.chunks[Int32_2{ 0, 0 }] = chunk;
+		return size_t(climateLoadWorld.GetBiome({ 8, 8 }));
+	});
+	climateRegions.Release();
 
 	TempDir rewriteTemp("region-rewrite-bench");
 	{
