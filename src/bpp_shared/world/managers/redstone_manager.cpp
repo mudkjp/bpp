@@ -34,6 +34,8 @@ struct RedstoneSolverScratch {
 	std::unordered_set<Int3> visited;
 	std::vector<Int3> order;
 	std::vector<uint8_t> oldLevels;
+	std::vector<Int3> worklist;
+	std::unordered_set<Int3> queued;
 };
 
 RedstoneSolverScratch& SolverScratch() {
@@ -496,30 +498,72 @@ static bool ResolvePowerLevels(WorldManager& _world, const std::vector<Int3>& _p
 	return hasChanged;
 }
 
+// Worklist variant used for larger networks. A dust level only depends on the
+// dust within one horizontal step (at the same or adjacent Y), so a changed
+// wire only has to wake its direct dust neighbours. This converges to the same
+// fixpoint as repeated full passes, without rescanning the whole network once
+// per propagation step.
+static void ResolvePowerLevelsWorklist(WorldManager& _world, const std::vector<Int3>& _positions,
+                                       const std::unordered_set<Int3>& _network, std::vector<Int3>& worklist,
+                                       std::unordered_set<Int3>& queued) {
+	worklist.clear();
+	queued.clear();
+	worklist.insert(worklist.end(), _positions.begin(), _positions.end());
+	queued.insert(_positions.begin(), _positions.end());
+
+	static constexpr Int3 DEPENDENCY_OFFSETS[12] = {
+		{ -1, 0, 0 }, { 1, 0, 0 },  { 0, 0, -1 },  { 0, 0, 1 },
+		{ -1, -1, 0 }, { 1, -1, 0 }, { 0, -1, -1 }, { 0, -1, 1 },
+		{ -1, 1, 0 },  { 1, 1, 0 },  { 0, 1, -1 },  { 0, 1, 1 },
+	};
+
+	for (size_t head = 0; head < worklist.size(); ++head) {
+		const Int3 pos = worklist[head];
+		queued.erase(pos);
+
+		const auto oldLevel = _world.GetMetadata(pos);
+		const auto newLevel = GetDustPowerLevel(_world, pos);
+		if (oldLevel == newLevel)
+			continue;
+		_world.SetBlock(pos, BLOCK_REDSTONE, newLevel, false, false);
+
+		for (const auto& offset : DEPENDENCY_OFFSETS) {
+			const Int3 neighbor{ pos.x + offset.x, pos.y + offset.y, pos.z + offset.z };
+			if (_network.contains(neighbor) && queued.insert(neighbor).second)
+				worklist.push_back(neighbor);
+		}
+	}
+}
+
 // Flood fill solver
 // Avoids a ton of redundant updates!
-static void SolveRedstoneNetwork(WorldManager& _world, Int3 _pos) {
-	auto& scratch = SolverScratch();
-	auto& visited = scratch.visited;
-	auto& order = scratch.order;
-	auto& oldLevels = scratch.oldLevels;
-	visited.clear();
-	order.clear();
-	oldLevels.clear();
+static void SolveRedstoneNetworkImpl(WorldManager& _world, Int3 _pos, std::unordered_set<Int3>& _visited,
+                                     std::vector<Int3>& _order, std::vector<uint8_t>& _oldLevels,
+                                     std::vector<Int3>* _worklist, std::unordered_set<Int3>* _queued) {
+	_visited.clear();
+	_order.clear();
+	_oldLevels.clear();
 
-	GetNeighbors(_world, _pos, visited, order, /*disable profile checks=*/true);
+	GetNeighbors(_world, _pos, _visited, _order, /*disable profile checks=*/true);
 
-	oldLevels.reserve(order.size());
-	for (auto& pos : order)
-		oldLevels.push_back(static_cast<uint8_t>(_world.GetMetadata(pos)));
+	_oldLevels.reserve(_order.size());
+	for (auto& pos : _order)
+		_oldLevels.push_back(static_cast<uint8_t>(_world.GetMetadata(pos)));
 
-	while (ResolvePowerLevels(_world, order))
-		;
+	// Small networks converge in a pass or two, where the extra bookkeeping of
+	// a worklist costs more than another sweep. Long wires benefit heavily
+	// because a full pass only advances power by one cell in the worst order.
+	constexpr size_t WORKLIST_THRESHOLD = 32;
+	if (_worklist && _queued && _order.size() > WORKLIST_THRESHOLD)
+		ResolvePowerLevelsWorklist(_world, _order, _visited, *_worklist, *_queued);
+	else
+		while (ResolvePowerLevels(_world, _order))
+			;
 
 	// Each redstone wire will try and reach further out if it went from 0->powered or powered->0
-	for (size_t i = 0; i < order.size(); ++i) {
-		const auto& pos = order[i];
-		auto oldLevel = oldLevels[i];
+	for (size_t i = 0; i < _order.size(); ++i) {
+		const auto& pos = _order[i];
+		auto oldLevel = _oldLevels[i];
 		auto newLevel = _world.GetMetadata(pos);
 		if (oldLevel != newLevel && (oldLevel == 0 || newLevel == 0)) {
 			// Always notify this wire tile's own direct neighbors
@@ -537,6 +581,34 @@ static void SolveRedstoneNetwork(WorldManager& _world, Int3 _pos) {
 			}
 		}
 	}
+}
+
+// Neighbor notifications during the loop above can synchronously start another
+// redstone update. The outer solve still owns its scratch containers at that
+// point, so nested solves use local storage and the (allocation-free) full-pass
+// resolver instead of clobbering it.
+static void SolveRedstoneNetwork(WorldManager& _world, Int3 _pos) {
+	thread_local bool solving = false;
+
+	if (solving) {
+		std::unordered_set<Int3> visited;
+		std::vector<Int3> order;
+		std::vector<uint8_t> oldLevels;
+		SolveRedstoneNetworkImpl(_world, _pos, visited, order, oldLevels, nullptr, nullptr);
+		return;
+	}
+
+	struct SolveGuard {
+		bool& flag;
+		~SolveGuard() {
+			flag = false;
+		}
+	} guard{ solving };
+	solving = true;
+
+	auto& scratch = SolverScratch();
+	SolveRedstoneNetworkImpl(_world, _pos, scratch.visited, scratch.order, scratch.oldLevels, &scratch.worklist,
+	                         &scratch.queued);
 }
 
 void RedstoneManager::TriggerRedstoneUpdate(WorldManager& _world, Int3 _pos, BlockType _newBlock, BlockType _oldBlock) {
