@@ -56,7 +56,7 @@ public:
 	bool AddChunk(std::shared_ptr<Chunk> _chunk, int64_t _timestamp, std::shared_ptr<const std::vector<Tag>> _entities);
 	// Stores an already-compressed chunk payload. Exposed so callers/tests can
 	// exercise the sector placement logic without re-encoding the chunk.
-	bool AddEncodedChunk(const std::vector<uint8_t>& _compressed, Int32_2 _cpos);
+	bool AddEncodedChunk(const std::vector<uint8_t>& _compressed, Int32_2 _cpos, int64_t _timestamp = 0);
 	// Sector offset currently assigned to a chunk, or 0 if absent (diagnostics/tests).
 	uint32_t ChunkSectorOffset(Int32_2 _cpos);
 	std::vector<uint8_t> EncodeNbtData(const std::shared_ptr<Chunk>& _chunk, int64_t _timestamp,
@@ -93,5 +93,8 @@ private:
 	//std::array<std::shared_ptr<Chunk>, REGION_AREA> chunks;
 	std::string GetPath();
 	std::array<FileHeaderEntry, 1024> regionHeader;
+	// Tick timestamp of the last accepted write per slot. Older snapshots are
+	// ignored so a slow IO task cannot overwrite a newer one.
+	std::array<int64_t, 1024> lastChunkTimestamp{};
 	FileHandle regionFile;
 };

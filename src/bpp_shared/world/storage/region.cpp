@@ -118,10 +118,10 @@ bool Region::AddChunk(std::shared_ptr<Chunk> _chunk, int64_t _timestamp,
 		return false;
 	}
 
-	return AddEncodedChunk(compressed, _chunk->cpos);
+	return AddEncodedChunk(compressed, _chunk->cpos, _timestamp);
 }
 
-bool Region::AddEncodedChunk(const std::vector<uint8_t>& compressed, Int32_2 _cpos) {
+bool Region::AddEncodedChunk(const std::vector<uint8_t>& compressed, Int32_2 _cpos, int64_t _timestamp) {
 	// Only lock after encoding (hehe)
 	std::lock_guard<std::mutex> lock(mutex);
 
@@ -143,6 +143,11 @@ bool Region::AddEncodedChunk(const std::vector<uint8_t>& compressed, Int32_2 _cp
 	// region file (plus the search for free space) grows without bound.
 	Int2 local{ _cpos.x & 31, _cpos.z & 31 };
 	int index = local.x + local.z * 32;
+
+	// Ignore a stale snapshot if a newer one has already reached disk. This
+	// can happen when two IO workers race on the same chunk.
+	if (_timestamp > 0 && _timestamp < lastChunkTimestamp[index])
+		return true;
 
 	// Common case: the recompressed chunk still fits in its existing extent.
 	// Reuse it instead of rebuilding the 1024-entry occupancy map and
@@ -242,6 +247,8 @@ bool Region::AddEncodedChunk(const std::vector<uint8_t>& compressed, Int32_2 _cp
 	// Only update the in-memory header once the file is fully written
 	regionHeader[index].offset = chosenOffset;
 	regionHeader[index].numberOfSectors = uint8_t(sectorsNeeded);
+	if (_timestamp > 0)
+		lastChunkTimestamp[index] = _timestamp;
 	return true;
 }
 
