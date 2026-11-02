@@ -158,7 +158,10 @@ public:
 	void Tick(const std::vector<ClientPosition>& _players, bool _advanceSimulation = true,
 	          TickProfiler* _profiler = nullptr);
 	void Update(const std::vector<ClientPosition>& _players);
-	void SaveChunks(const bool _saveIfEntities = false, const bool _deleteEntities = false);
+	// `_maxChunks` bounds how many snapshots are taken in one call; remaining
+	// dirty chunks stay in the index for the next autosave tick.
+	void SaveChunks(const bool _saveIfEntities = false, const bool _deleteEntities = false,
+	                size_t _maxChunks = SIZE_MAX);
 	void Shutdown();
 	void SeedChunkLighting(Int32_2 _pos);
 	void PerformRandomTicks(const std::vector<ClientPosition>& _players);

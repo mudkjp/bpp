@@ -463,7 +463,10 @@ void WorldManager::Tick(const std::vector<ClientPosition>& _players, bool _advan
 		// Saving
 		if (tickScheduler.currentTick % 40 == 0) {
 			auto saveStart = _profiler ? Clock::now() : Clock::time_point{};
-			SaveChunks(tickScheduler.currentTick % 600 == 0);
+			// Snapshot a small batch per autosave so a burst of newly dirty
+			// chunks cannot stall the tick. The rest stay indexed.
+			static constexpr size_t AUTOSAVE_SNAPSHOT_BUDGET = 16;
+			SaveChunks(tickScheduler.currentTick % 600 == 0, false, AUTOSAVE_SNAPSHOT_BUDGET);
 			if (_profiler)
 				_profiler->Record(TickTask::Autosave, Clock::now() - saveStart);
 		}
@@ -610,25 +613,29 @@ void WorldManager::PerformRandomTicks(const std::vector<ClientPosition>& _player
 	}
 }
 
-void WorldManager::SaveChunks(const bool _saveIfEntities, const bool _deleteEntities) {
-	auto saveAt = [&](Int32_2 pos) {
+void WorldManager::SaveChunks(const bool _saveIfEntities, const bool _deleteEntities, size_t _maxChunks) {
+	auto saveAt = [&](Int32_2 pos) -> bool {
 		auto it = chunks.find(pos);
 		if (it == chunks.end() || !it->second)
-			return;
+			return true; // Stale index entry, nothing to save.
 		Chunk* chunk = it->second.get();
 		const ChunkState s = chunk->state.load();
 		if (s < ChunkState::Generated || s == ChunkState::Generating || s == ChunkState::Loading)
-			return;
+			return true; // Not ready yet; drop it from the dirty index.
 		if (regionManager)
 			regionManager->SaveChunk(it->second, _deleteEntities);
 		chunk->isModified = false;
+		return true;
 	};
 
-	// Only chunks that warmed the dirty index need saving.
-	for (auto it = dirtyChunks.begin(); it != dirtyChunks.end();) {
+	size_t saved = 0;
+	// Only chunks that warmed the dirty index need saving, and only a bounded
+	// batch per call. Unsaved entries remain in the index.
+	for (auto it = dirtyChunks.begin(); it != dirtyChunks.end() && saved < _maxChunks;) {
 		const Int32_2 pos = *it;
 		it = dirtyChunks.erase(it);
 		saveAt(pos);
+		++saved;
 	}
 
 	// Entity-only chunks are saved on the slower entity cadence. Iterate the
@@ -636,8 +643,12 @@ void WorldManager::SaveChunks(const bool _saveIfEntities, const bool _deleteEnti
 	if (_saveIfEntities) {
 		for (const auto& [cpos, container] : entityManager.entityContainers) {
 			(void)container;
-			if (entityManager.ChunkHasEntities(cpos))
+			if (saved >= _maxChunks)
+				break;
+			if (entityManager.ChunkHasEntities(cpos)) {
 				saveAt({ cpos.x, cpos.y });
+				++saved;
+			}
 		}
 	}
 }
