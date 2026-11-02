@@ -61,14 +61,16 @@ void NetworkStream::FlushWriteBufferBlocking() {
 #endif
 
 	size_t sent = 0;
-	while (sent < writeBuffer.size()) {
-		int result = send(clientSocket, reinterpret_cast<const char*>(writeBuffer.data() + sent),
-		                  static_cast<int>(writeBuffer.size() - sent), 0);
+	const size_t pending = PendingWriteBytes();
+	while (sent < pending) {
+		int result = send(clientSocket, reinterpret_cast<const char*>(writeBuffer.data() + writePos + sent),
+		                  static_cast<int>(pending - sent), 0);
 		if (result <= 0)
 			break;
 		sent += static_cast<size_t>(result);
 	}
 	writeBuffer.clear();
+	writePos = 0;
 
 	// We close here so the client can get the packet data we just sent out before we disconnect
 #if defined(_WIN32) || defined(_WIN64)
@@ -91,8 +93,15 @@ void NetworkStream::WriteString8(const std::string& _str) {
 
 std::string NetworkStream::ReadString8() {
 	uint16_t len = Read<uint16_t>(); // adjust to uint32_t if your protocol uses 4-byte lengths
-	std::string result(len, '\0');
-	ReadBytes(reinterpret_cast<uint8_t*>(result.data()), len);
+	if (IsShortRead())
+		return {};
+	if (readBuffer.size() - readPos < len) {
+		shortRead = true;
+		return {};
+	}
+	const char* src = reinterpret_cast<const char*>(readBuffer.data() + readPos);
+	std::string result(src, len);
+	readPos += len;
 	return result;
 }
 
@@ -103,11 +112,13 @@ void NetworkStream::WriteString16(const std::string& _str) {
 	Write(static_cast<uint16_t>(length));
 	if (!connected)
 		return;
-	if (writeBuffer.size() + length * 2 > MAX_WRITE_BUFFER) {
+	if (PendingWriteBytes() + length * 2 > MAX_WRITE_BUFFER) {
 		Logger::Warning << "NetworkStream: write buffer limit exceeded, dropping client\n";
 		connected = false;
 		return;
 	}
+	if (writePos > 0 && writeBuffer.size() + length * 2 > MAX_WRITE_BUFFER)
+		CompactWriteBuffer();
 	// Encode big-endian UTF-16 straight into the write buffer (no temporary)
 	const size_t old = writeBuffer.size();
 	writeBuffer.resize(old + length * 2);
@@ -131,13 +142,24 @@ std::string NetworkStream::ReadString16() {
 	const uint8_t* src = readBuffer.data() + readPos;
 	readPos += bytes;
 
-	// Read as UTF-16 (2 bytes per char) regardless of platform wchar_t size
-	std::u16string result;
+	// Decode big-endian UTF-16 straight to UTF-8. Avoids an intermediate
+	// u16string allocation and a second pass over the string.
+	std::string result;
 	result.reserve(len);
 	for (uint16_t i = 0; i < len; i++) {
-		result.push_back(static_cast<char16_t>((uint16_t(src[i * 2]) << 8) | uint16_t(src[i * 2 + 1])));
+		const char16_t c = static_cast<char16_t>((uint16_t(src[i * 2]) << 8) | uint16_t(src[i * 2 + 1]));
+		if (c <= 0x7F) {
+			result.push_back(static_cast<char>(c));
+		} else if (c <= 0x7FF) {
+			result.push_back(static_cast<char>(0xC0 | (c >> 6)));
+			result.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+		} else {
+			result.push_back(static_cast<char>(0xE0 | (c >> 12)));
+			result.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
+			result.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+		}
 	}
-	return ToUTF8(result);
+	return result;
 }
 
 size_t NetworkStream::ReadBytes(uint8_t* _buf, size_t _len) {
@@ -160,11 +182,13 @@ void NetworkStream::WriteBytes(const uint8_t* _buf, size_t _len) {
 	// Session was kicked or closed, skip
 	if (!connected)
 		return;
-	if (writeBuffer.size() + _len > MAX_WRITE_BUFFER) {
+	if (PendingWriteBytes() + _len > MAX_WRITE_BUFFER) {
 		Logger::Warning << "NetworkStream: write buffer limit exceeded, dropping client\n";
 		connected = false;
 		return;
 	}
+	if (writePos > 0 && writeBuffer.size() + _len > MAX_WRITE_BUFFER)
+		CompactWriteBuffer();
 	writeBuffer.insert(writeBuffer.end(), _buf, _buf + _len);
 }
 
@@ -283,12 +307,13 @@ void NetworkStream::WriteEntityMetadata(const std::vector<PacketData::EntityMeta
 }
 
 bool NetworkStream::FlushWriteBuffer() {
-	if (writeBuffer.empty())
+	const size_t pending = PendingWriteBytes();
+	if (pending == 0)
 		return connected;
 	size_t sent = 0;
-	while (sent < writeBuffer.size()) {
-		int result = send(clientSocket, reinterpret_cast<const char*>(writeBuffer.data() + sent),
-		                  static_cast<int>(writeBuffer.size() - sent), 0);
+	while (sent < pending) {
+		int result = send(clientSocket, reinterpret_cast<const char*>(writeBuffer.data() + writePos + sent),
+		                  static_cast<int>(pending - sent), 0);
 		if (result < 0) {
 #if defined(_WIN32) || defined(_WIN64)
 			int err = WSAGetLastError();
@@ -308,8 +333,15 @@ bool NetworkStream::FlushWriteBuffer() {
 		sent += static_cast<size_t>(result);
 	}
 	if (sent > 0) {
-		writeBuffer.erase(writeBuffer.begin(),
-		                  writeBuffer.begin() + static_cast<std::vector<unsigned char>::difference_type>(sent));
+		writePos += sent;
+		if (writePos == writeBuffer.size()) {
+			writeBuffer.clear();
+			writePos = 0;
+		} else if (writePos >= 64 * 1024 || writePos * 2 >= writeBuffer.size()) {
+			// Don't memmove the tail on every partial flush, but don't let the
+			// already-sent prefix inflate memory or the write cap either.
+			CompactWriteBuffer();
+		}
 	}
 	return connected;
 }

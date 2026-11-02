@@ -39,9 +39,10 @@ public:
 	NetworkStream(NetworkStream&& _other) noexcept
 	    : clientSocket(_other.clientSocket), connected(_other.connected.load()), shortRead(_other.shortRead),
 	      readBuffer(std::move(_other.readBuffer)), readPos(_other.readPos),
-	      writeBuffer(std::move(_other.writeBuffer)) {
+	      writeBuffer(std::move(_other.writeBuffer)), writePos(_other.writePos) {
 		_other.clientSocket = INVALID_SOCKET;
 		_other.readPos = 0;
+		_other.writePos = 0;
 	}
 	bool NewClient();
 	void Discard() {
@@ -169,6 +170,19 @@ private:
 	size_t readPos = 0;
 
 	std::vector<uint8_t> writeBuffer;
+	// Bytes at the front of writeBuffer that have already reached the socket.
+	size_t writePos = 0;
+
+	size_t PendingWriteBytes() const {
+		return writeBuffer.size() - writePos;
+	}
+	void CompactWriteBuffer() {
+		if (writePos == 0)
+			return;
+		writeBuffer.erase(writeBuffer.begin(),
+		                  writeBuffer.begin() + static_cast<std::ptrdiff_t>(writePos));
+		writePos = 0;
+	}
 
 	static constexpr size_t MAX_READ_BUFFER = 1u << 20;  // 1 MiB
 	static constexpr size_t MAX_WRITE_BUFFER = 8u << 20; // 8 MiB
