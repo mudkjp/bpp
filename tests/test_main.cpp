@@ -1137,6 +1137,30 @@ void TestEntityTickScratch() {
 	CHECK_EQ(manager.tickSnapshot.size(), size_t(1000));
 }
 
+void TestEntityBucketMigration() {
+	struct MovingEntity : Entity {
+		void Tick() override {
+			position.x = 16.0;
+		}
+	};
+
+	WorldManager world;
+	EntityManager manager;
+	manager.world = &world;
+	EntityId nextId = 1;
+	manager.nextEntityId = &nextId;
+	for (int i = 0; i < 1000; ++i) {
+		auto entity = std::make_shared<MovingEntity>();
+		entity->position = { 0.0, 64.0, double(i % 16) };
+		entity->actsAsWorldCollider = true;
+		manager.AddEntity(entity);
+	}
+
+	manager.Tick();
+	for (const auto& entity : manager.entities)
+		CHECK_EQ(entity->bucketPos.x, 1);
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1274,6 +1298,7 @@ std::vector<TestCase> Tests() {
 		{ "entity_index", TestEntityIndex },
 		{ "entity_aabb_queries", TestEntityAabbQueries },
 		{ "entity_tick_scratch", TestEntityTickScratch },
+		{ "entity_bucket_migration", TestEntityBucketMigration },
 		{ "equipment_dirty_gating", TestEquipmentDirtyGating },
 		{ "tracker_update_operations", TestTrackerUpdateOperations },
 		{ "tracker_spawn_pass_cache", TestTrackerSpawnPassCaching },
@@ -1553,6 +1578,29 @@ void RunBenchmarks() {
 	Bench("entity_tick_1000", 0, [&] {
 		tickManager.Tick();
 		return tickManager.entities.size();
+	});
+
+	struct MigratingEntity : Entity {
+		bool high = false;
+		void Tick() override {
+			high = !high;
+			position.x = high ? 16.0 : 0.0;
+		}
+	};
+	WorldManager migrationWorld;
+	EntityManager migrationManager;
+	migrationManager.world = &migrationWorld;
+	EntityId migrationNextId = 1;
+	migrationManager.nextEntityId = &migrationNextId;
+	for (int i = 0; i < 1000; ++i) {
+		auto entity = std::make_shared<MigratingEntity>();
+		entity->position = { 0.0, 64.0, double(i % 16) };
+		entity->actsAsWorldCollider = true;
+		migrationManager.AddEntity(entity);
+	}
+	Bench("entity_bucket_migration_1000", 0, [&] {
+		migrationManager.Tick();
+		return migrationManager.entities.size();
 	});
 
 	WorldManager interestWorld;
