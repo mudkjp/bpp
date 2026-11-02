@@ -24,6 +24,9 @@
 #include "crafting/recipe_manager.h"
 #include "entities/entity_mobile.h"
 #include "helpers/deflate_pool.h"
+#include "inventory/inventory.h"
+#include "inventory/inventory_interaction.h"
+#include "inventory/item_stack.h"
 #include "helpers/endian_convert.h"
 #include "helpers/packed_array.h"
 #include "java_math.h"
@@ -1483,6 +1486,42 @@ void TestCommandParsing() {
 	CHECK_EQ(int(incomplete.error().error), int(strategos::ParseError::IncompleteCommand));
 }
 
+void TestInventoryTickDiff() {
+	Inventory inventory(45);
+	InventoryInteraction interaction(&inventory);
+	interaction.InitSnapshot();
+
+	auto unchanged = interaction.TickDiff();
+	CHECK(unchanged.empty());
+
+	inventory.slots[7] = ItemStack{ ItemId(5), 3, 1 };
+	auto changed = interaction.TickDiff();
+	CHECK_EQ(changed.size(), size_t(1));
+	CHECK_EQ(changed[0].slot, 7);
+	CHECK_EQ(changed[0].stack.id, ItemId(5));
+	CHECK_EQ(int(changed[0].stack.count), 3);
+
+	// The snapshot advanced, so an immediate second diff is empty.
+	CHECK(interaction.TickDiff().empty());
+
+	// Multiple changes are reported in slot order.
+	inventory.slots[7] = ItemStack{};
+	inventory.slots[8] = ItemStack{ ItemId(6), 1, 0 };
+	auto multiple = interaction.TickDiff();
+	CHECK_EQ(multiple.size(), size_t(2));
+	CHECK_EQ(multiple[0].slot, 7);
+	CHECK_EQ(multiple[1].slot, 8);
+
+	// The diff buffer is reused, so later ticks do not allocate again.
+	const size_t capacity = interaction.diffScratch.capacity();
+	CHECK(capacity >= size_t(2));
+	CHECK(interaction.TickDiff().empty());
+	CHECK_EQ(interaction.diffScratch.capacity(), capacity);
+	inventory.slots[9] = ItemStack{ ItemId(7), 1, 0 };
+	CHECK_EQ(interaction.TickDiff().size(), size_t(1));
+	CHECK_EQ(interaction.diffScratch.capacity(), capacity);
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1720,6 +1759,7 @@ std::vector<TestCase> Tests() {
 		{ "region_overwrite_reuses_sectors", TestRegionOverwriteReusesSectors },
 		{ "region_manager_save_queue", TestRegionManagerSaveQueue },
 		{ "recipe_mirror", TestRecipeMirror },
+		{ "inventory_tick_diff", TestInventoryTickDiff },
 		{ "command_parsing", TestCommandParsing },
 		{ "config_fixture", TestConfigFixture },
 		{ "string16_into_reuse", TestString16IntoReuse },
@@ -1876,6 +1916,25 @@ void RunBenchmarks() {
 	Bench("command_parse_tp_mixed", 0, [&] {
 		auto result = commandTree.execute("tp Alice 1 2 3", nullptr, commandAllow);
 		return result.has_value() ? result->size() : size_t(0);
+	});
+
+	Inventory diffInventory(45);
+	InventoryInteraction diffInteraction(&diffInventory);
+	diffInteraction.InitSnapshot();
+	Bench("inventory_tickdiff_unchanged", 0, [&] {
+		return diffInteraction.TickDiff().size();
+	});
+	int diffToggle = 0;
+	Bench("inventory_tickdiff_one_changed", 0, [&] {
+		diffInventory.slots[7] = (diffToggle++ & 1) ? ItemStack{ ItemId(5), 1, 0 } : ItemStack{};
+		return diffInteraction.TickDiff().size();
+	});
+	int fullDiffToggle = 0;
+	Bench("inventory_tickdiff_all_changed", 0, [&] {
+		const bool fill = (fullDiffToggle++ & 1) != 0;
+		for (auto& slot : diffInventory.slots)
+			slot = fill ? ItemStack{ ItemId(5), 1, 0 } : ItemStack{};
+		return diffInteraction.TickDiff().size();
 	});
 
 	EntityTracker benchTracker;
