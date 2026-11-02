@@ -1015,6 +1015,58 @@ void TestBlockChangeDedup() {
 	CHECK_EQ(int(changes[1].block.type), int(BLOCK_GRASS));
 }
 
+void TestEntityAabbQueries() {
+	WorldManager world;
+	EntityManager manager;
+	manager.world = &world;
+	EntityId nextId = 1;
+	manager.nextEntityId = &nextId;
+
+	auto add = [&](Vec3 pos, bool collidable) {
+		auto entity = std::make_shared<Entity>();
+		entity->type = EntityType::ITEM;
+		entity->position = pos;
+		entity->actsAsWorldCollider = collidable;
+		manager.AddEntity(entity);
+		return entity;
+	};
+	auto first = add({ 0.0, 0.0, 0.0 }, true);
+	auto second = add({ 1.0, 0.0, 0.0 }, false);
+	auto far = add({ 40.0, 0.0, 0.0 }, true);
+
+	const AABB nearBox{ -0.5, -0.5, -0.5, 1.5, 1.5, 1.5 };
+	std::vector<Entity*> out;
+	out.reserve(8);
+	const size_t capacity = out.capacity();
+	for (int i = 0; i < 100; ++i)
+		manager.GetEntitiesWithinAabb(nearBox, out);
+	CHECK_EQ(out.size(), size_t(2));
+	CHECK_EQ(out.capacity(), capacity);
+	CHECK(std::find(out.begin(), out.end(), first.get()) != out.end());
+	CHECK(std::find(out.begin(), out.end(), second.get()) != out.end());
+	CHECK(std::find(out.begin(), out.end(), far.get()) == out.end());
+
+	manager.GetEntitiesWithinAabbExcluding(nearBox, first->id, out);
+	CHECK_EQ(out.size(), size_t(1));
+	CHECK_EQ(out[0], second.get());
+
+	EntityType itemType = EntityType::ITEM;
+	manager.GetEntitiesWithinAabbOfType(nearBox, itemType, out);
+	CHECK_EQ(out.size(), size_t(2));
+
+	CHECK(manager.AnyEntityWithinAabb(nearBox));
+	const AABB emptyBox{ 100.0, 100.0, 100.0, 101.0, 101.0, 101.0 };
+	CHECK(!manager.AnyEntityWithinAabb(emptyBox));
+
+	manager.GetCollidablesWithinAabb(nearBox, EntityId(-1), out);
+	CHECK(std::find(out.begin(), out.end(), first.get()) != out.end());
+	CHECK(std::find(out.begin(), out.end(), far.get()) == out.end());
+
+	auto allocating = manager.GetEntitiesWithinAabb(nearBox);
+	manager.GetEntitiesWithinAabb(nearBox, out);
+	CHECK_EQ(allocating.size(), out.size());
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1150,6 +1202,7 @@ std::vector<TestCase> Tests() {
 		{ "chunk_light_emitters", TestChunkLightEmitters },
 		{ "collision_fast_path", TestCollisionFastPath },
 		{ "entity_index", TestEntityIndex },
+		{ "entity_aabb_queries", TestEntityAabbQueries },
 		{ "equipment_dirty_gating", TestEquipmentDirtyGating },
 		{ "tracker_update_operations", TestTrackerUpdateOperations },
 		{ "tracker_spawn_pass_cache", TestTrackerSpawnPassCaching },
@@ -1333,6 +1386,33 @@ void RunBenchmarks() {
 		const size_t before = benchTracker.spawnPairChecks;
 		benchTracker.Tick();
 		return benchTracker.spawnPairChecks - before;
+	});
+
+	WorldManager aabbWorld;
+	EntityManager aabbManager;
+	aabbManager.world = &aabbWorld;
+	EntityId aabbNextId = 1;
+	aabbManager.nextEntityId = &aabbNextId;
+	for (int i = 0; i < 100; ++i) {
+		auto entity = std::make_shared<Entity>();
+		entity->type = EntityType::ITEM;
+		entity->position = { double(i % 10), 64.0, double(i / 10) };
+		entity->actsAsWorldCollider = true;
+		aabbManager.AddEntity(entity);
+	}
+	const AABB aabbBox{ -1.0, 63.0, -1.0, 11.0, 66.0, 11.0 };
+	std::vector<Entity*> aabbOut;
+	aabbOut.reserve(128);
+	Bench("aabb_query_allocate", 0, [&] {
+		auto result = aabbManager.GetEntitiesWithinAabb(aabbBox);
+		return result.size();
+	});
+	Bench("aabb_query_reuse", 0, [&] {
+		aabbManager.GetEntitiesWithinAabb(aabbBox, aabbOut);
+		return aabbOut.size();
+	});
+	Bench("aabb_query_any", 0, [&] {
+		return aabbManager.AnyEntityWithinAabb(aabbBox) ? size_t(1) : size_t(0);
 	});
 
 	trackerPlayer->position.x = 0.0;
