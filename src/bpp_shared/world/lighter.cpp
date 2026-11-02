@@ -186,21 +186,27 @@ void Lighter::PropagateLightAt(int _x, int _y, int _z, LightType _type, WorldMan
 	maybeQueue(_x, _y, _z + 1, czp, lx, lzp, 5);
 }
 
-void Lighter::UnlightAt(int _x, int _y, int _z, LightType _type, WorldManager& _world) {
+void Lighter::UnlightAt(int _x, int _y, int _z, LightType _type, WorldManager& _world, Chunk* _centerChunk) {
 	// Separate function for this since beta's lighting engine can't decrease light values in place
 	if (_y < 0 || _y >= CHUNK_HEIGHT)
 		return;
 
-	ChunkCache unlightCache;
-
-	unlightCache.Refresh(_x >> 4, _z >> 4, _world);
-	Chunk* chunk = unlightCache.grid[1][1];
-	if (!chunk)
+	// Callers that already hold the edited chunk can pass it in, which avoids
+	// populating the 3x3 chunk cache just to discover the light is already 0.
+	Chunk* chunk = _centerChunk ? _centerChunk : _world.GetChunkRaw({ _x >> 4, _z >> 4 });
+	if (!chunk || chunk->state.load(std::memory_order_acquire) < ChunkState::Generated)
 		return;
 
-	int lx = _x & 15, lz = _z & 15;
-	int oldVal = (_type == LightType::Sky) ? chunk->GetSkyLight({ lx, _y, lz }) : chunk->GetBlockLight({ lx, _y, lz });
+	const int lx = _x & 15, lz = _z & 15;
+	const int oldVal =
+	    (_type == LightType::Sky) ? chunk->GetSkyLight({ lx, _y, lz }) : chunk->GetBlockLight({ lx, _y, lz });
 	if (oldVal == 0)
+		return;
+
+	ChunkCache unlightCache;
+	unlightCache.Refresh(_x >> 4, _z >> 4, _world);
+	chunk = unlightCache.grid[1][1];
+	if (!chunk)
 		return;
 
 	// Block/meta and the untouched light channel aren't affected by the light

@@ -91,7 +91,8 @@ public:
 	}
 
 	void PropagateLightAt(int _x, int _y, int _z, LightType _type, WorldManager& _world, ChunkCache& _cache);
-	void UnlightAt(int _x, int _y, int _z, LightType _type, WorldManager& _world);
+	void UnlightAt(int _x, int _y, int _z, LightType _type, WorldManager& _world,
+	               Chunk* _centerChunk = nullptr);
 
 	// Process up to `maxIterations` light-queue entries this call.
 	bool ProcessLightQueue(WorldManager& _world, int _maxIterations = INT_MAX);

@@ -127,8 +127,8 @@ void WorldWrapper::SetBlock(const Int3 _wpos, const BlockType _type, const uint8
 
 	// Unlight before changing the block
 	if (changesLighting) {
-		manager.lightManager.UnlightAt(_wpos.x, _wpos.y, _wpos.z, LightType::Block, manager);
-		manager.lightManager.UnlightAt(_wpos.x, _wpos.y, _wpos.z, LightType::Sky, manager);
+		manager.lightManager.UnlightAt(_wpos.x, _wpos.y, _wpos.z, LightType::Block, manager, chunk);
+		manager.lightManager.UnlightAt(_wpos.x, _wpos.y, _wpos.z, LightType::Sky, manager, chunk);
 	}
 
 	// Then finally set the new block
@@ -145,7 +145,7 @@ void WorldWrapper::SetBlock(const Int3 _wpos, const BlockType _type, const uint8
 		if (newHeight > oldHeight) {
 			// Notify the BFS that all blocks from y down to oldHeight need updating
 			for (int sy = oldHeight; sy <= newHeight; ++sy) {
-				manager.lightManager.UnlightAt(_wpos.x, sy, _wpos.z, LightType::Sky, manager);
+				manager.lightManager.UnlightAt(_wpos.x, sy, _wpos.z, LightType::Sky, manager, chunk);
 			}
 		} else if (newHeight < oldHeight) {
 			// Height fell

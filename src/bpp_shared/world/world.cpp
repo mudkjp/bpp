@@ -1221,8 +1221,8 @@ void WorldManager::SetBlock(const Int3 _wpos, const BlockType _blockType, const 
 
 	// Unlight before changing the block
 	if (changesLighting) {
-		lightManager.UnlightAt(_wpos.x, _wpos.y, _wpos.z, LightType::Block, *this);
-		lightManager.UnlightAt(_wpos.x, _wpos.y, _wpos.z, LightType::Sky, *this);
+		lightManager.UnlightAt(_wpos.x, _wpos.y, _wpos.z, LightType::Block, *this, chunk);
+		lightManager.UnlightAt(_wpos.x, _wpos.y, _wpos.z, LightType::Sky, *this, chunk);
 	}
 
 	// Then finally set the new block
@@ -1247,7 +1247,7 @@ void WorldManager::SetBlock(const Int3 _wpos, const BlockType _blockType, const 
 		if (newHeight > oldHeight) {
 			// Notify the BFS that all blocks from y down to oldHeight need updating
 			for (int sy = oldHeight; sy <= newHeight; ++sy) {
-				lightManager.UnlightAt(pos.x, sy, pos.z, LightType::Sky, *this);
+				lightManager.UnlightAt(pos.x, sy, pos.z, LightType::Sky, *this, chunk);
 			}
 		} else if (newHeight < oldHeight) {
 			// Height fell
