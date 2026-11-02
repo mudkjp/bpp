@@ -282,12 +282,17 @@ struct ChunkSender {
 			return;
 
 		auto& queue = it->second;
-		std::vector<PendingChunk> stillPending;
+		// Keep pending jobs at the front of the queue in place. A separate
+		// stillPending vector allocated (and freed) on every session flush.
+		size_t keep = 0;
 
-		for (auto& pc : queue) {
+		for (size_t i = 0; i < queue.size(); ++i) {
+			auto& pc = queue[i];
 			// Non-blocking check: only consume results that are ready now.
 			if (pc.data.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
-				stillPending.push_back(std::move(pc));
+				if (keep != i)
+					queue[keep] = std::move(pc);
+				++keep;
 				continue;
 			}
 
@@ -335,7 +340,7 @@ struct ChunkSender {
 			}
 		}
 
-		queue = std::move(stillPending);
+		queue.resize(keep);
 
 		// Drain in-flight sub-region compression jobs in submission order.
 		auto srIt = subRegionFlight.find(&_session);
