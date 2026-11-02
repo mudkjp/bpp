@@ -2032,6 +2032,43 @@ void TestLightQueueBudgetConvergence() {
 	CHECK_EQ(hashLight(reference), hashLight(budgeted));
 }
 
+void TestLargeChestMirrorSync() {
+	InventoryPlayer player;
+	auto upper = std::make_shared<TileEntityChest>(Int3{ 0, 64, 0 });
+	auto lower = std::make_shared<TileEntityChest>(Int3{ 0, 64, 1 });
+	LargeChestInventoryInteraction interaction(&player, upper, lower);
+	interaction.InitSnapshot();
+	CHECK(interaction.TickDiff().empty());
+
+	// External upper, lower, and player changes are reported at the mapped slots.
+	upper->inventory.slots[2] = ItemStack{ ItemId(5), 2, 0 };
+	auto upperDiff = interaction.TickDiff();
+	CHECK_EQ(upperDiff.size(), size_t(1));
+	CHECK_EQ(upperDiff[0].slot, 2);
+	CHECK(interaction.TickDiff().empty());
+
+	lower->inventory.slots[4] = ItemStack{ ItemId(6), 3, 0 };
+	auto lowerDiff = interaction.TickDiff();
+	CHECK_EQ(lowerDiff.size(), size_t(1));
+	CHECK_EQ(lowerDiff[0].slot, 27 + 4);
+	CHECK(interaction.TickDiff().empty());
+
+	player.slots[12] = ItemStack{ ItemId(7), 1, 0 };
+	auto playerDiff = interaction.TickDiff();
+	CHECK_EQ(playerDiff.size(), size_t(1));
+	CHECK_EQ(playerDiff[0].slot, 54 + 3);
+	CHECK(interaction.TickDiff().empty());
+
+	// Client-side mirror edits still notify and write back.
+	interaction.sharedInventory.slots[1] = ItemStack{ ItemId(8), 4, 0 };
+	interaction.sharedInventory.OnInventoryChanged();
+	auto mirrorDiff = interaction.TickDiff();
+	CHECK_EQ(mirrorDiff.size(), size_t(1));
+	CHECK_EQ(mirrorDiff[0].slot, 1);
+	CHECK_EQ(upper->inventory.slots[1].id, ItemId(8));
+	CHECK(interaction.TickDiff().empty());
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -2281,6 +2318,7 @@ std::vector<TestCase> Tests() {
 		{ "recipe_mirror", TestRecipeMirror },
 		{ "inventory_tick_diff", TestInventoryTickDiff },
 		{ "large_chest_interaction", TestLargeChestInteraction },
+		{ "large_chest_mirror_sync", TestLargeChestMirrorSync },
 		{ "container_mirror_sync", TestContainerMirrorSync },
 		{ "player_save_queue", TestPlayerSaveQueue },
 		{ "command_parsing", TestCommandParsing },
