@@ -16,6 +16,7 @@
 #include "quantized_types.h"
 #include <dimensions.h>
 #include <packet_ids.h>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -931,8 +932,12 @@ struct ChunkData : BasePacket {
 	SlimInt3<int16_t> pos{ 0, 0, 0 };
 	TriNumber<uint8_t> size{ CHUNK_WIDTH - 1, CHUNK_HEIGHT - 1, CHUNK_WIDTH - 1 };
 	std::vector<uint8_t> compressedData;
+	// Optional shared payload (used by deduplicated sub-region broadcasts so
+	// every viewer can serialize without copying the compressed bytes).
+	std::shared_ptr<const std::vector<uint8_t>> sharedCompressedData;
 
 	void Serialize(NetworkStream& _stream) const override {
+		const std::vector<uint8_t>& data = sharedCompressedData ? *sharedCompressedData : compressedData;
 		_stream.Write(id);
 		_stream.Write(pos.x);
 		_stream.Write(pos.y);
@@ -940,8 +945,8 @@ struct ChunkData : BasePacket {
 		_stream.Write(size.x);
 		_stream.Write(size.y);
 		_stream.Write(size.z);
-		_stream.Write(static_cast<int32_t>(compressedData.size()));
-		_stream.WriteBytes(compressedData.data(), compressedData.size());
+		_stream.Write(static_cast<int32_t>(data.size()));
+		_stream.WriteBytes(data.data(), data.size());
 	}
 
 	void Deserialize(NetworkStream& _stream) override {

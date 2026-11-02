@@ -28,7 +28,6 @@ struct SubRegionKey {
 	Int32_2 chunk;
 	const Chunk* chunkPtr;
 	int32_t xmin, xmax, ymin, ymax, zmin, zmax;
-	size_t changesHash;
 
 	bool operator==(const SubRegionKey&) const = default;
 };
@@ -44,7 +43,6 @@ struct SubRegionKeyHasher {
 		HashCombine(h, _key.ymax);
 		HashCombine(h, _key.zmin);
 		HashCombine(h, _key.zmax);
-		HashCombine(h, _key.changesHash);
 		return h;
 	}
 };
@@ -61,8 +59,8 @@ struct ChunkSender {
 	// One result slot per in-flight sub-region block update (>= 10 changes).
 	struct PendingSubRegion {
 		Int32_2 chunkPos;
-		Packet::ChunkData header; // pre-filled, compressedData empty until ready
-		std::shared_future<std::vector<uint8_t>> data;
+		Packet::ChunkData header; // pre-filled, payload comes from the shared future
+		std::shared_future<std::shared_ptr<const std::vector<uint8_t>>> data;
 	};
 
 	// Per-session queue of in-flight full-chunk serialization jobs.
@@ -77,7 +75,9 @@ struct ChunkSender {
 	// reuse chunk packets across clients for 1 tick.
 	std::unordered_map<const Chunk*, std::shared_future<Packet::ChunkData>> tickPackets;
 	// Reuse sub-region compression across all viewers for one tick.
-	std::unordered_map<SubRegionKey, std::shared_future<std::vector<uint8_t>>, SubRegionKeyHasher> tickSubRegions;
+	std::unordered_map<SubRegionKey, std::shared_future<std::shared_ptr<const std::vector<uint8_t>>>,
+	                   SubRegionKeyHasher>
+	    tickSubRegions;
 
 	void BeginTick() {
 		tickPackets.clear();
@@ -141,6 +141,12 @@ struct ChunkSender {
 			                           return std::abs(_pc.pos.x - cx) > radius || std::abs(_pc.pos.z - cz) > radius;
 		                           }),
 		            queue.end());
+		auto subIt = subRegionFlight.find(&_session);
+		if (subIt != subRegionFlight.end()) {
+			std::erase_if(subIt->second, [&](const PendingSubRegion& _psr) {
+				return std::abs(_psr.chunkPos.x - cx) > radius || std::abs(_psr.chunkPos.z - cz) > radius;
+			});
+		}
 
 		// Rebuild toSend, excluding chunks that already have an in-flight job.
 		int submitted = 0;
@@ -171,7 +177,7 @@ struct ChunkSender {
 
 	void SendBlockUpdates(PlayerSession& _session, const Int32_2& _chunk, const std::vector<PendingBlock>& _changes,
 	                      std::shared_ptr<const Chunk> _chunkRef = nullptr) {
-		if (_changes.empty())
+		if (_changes.empty() || !_chunkRef)
 			return;
 
 		// Find bounding box in chunk-local space
@@ -200,15 +206,6 @@ struct ChunkSender {
 		ymin = std::max<int>(ymin, 0);
 		ymax = std::min<int>(ymax, CHUNK_HEIGHT - 1);
 
-		size_t changesHash = 0;
-		for (const auto& pb : _changes) {
-			HashCombine(changesHash, pb.blockPos.x);
-			HashCombine(changesHash, pb.blockPos.y);
-			HashCombine(changesHash, pb.blockPos.z);
-			HashCombine(changesHash, pb.block.type);
-			HashCombine(changesHash, pb.block.data);
-		}
-
 		PendingSubRegion psr;
 		psr.chunkPos = _chunk;
 		psr.header.pos.x = _chunk.x * CHUNK_WIDTH + xmin;
@@ -217,17 +214,17 @@ struct ChunkSender {
 		psr.header.size.x = static_cast<uint8_t>(xmax - xmin);
 		psr.header.size.y = static_cast<uint8_t>(ymax - ymin);
 		psr.header.size.z = static_cast<uint8_t>(zmax - zmin);
-		if (_chunkRef) {
-			const SubRegionKey key{ _chunk, _chunkRef.get(), xmin, xmax, ymin, ymax, zmin, zmax, changesHash };
-			auto [job, inserted] = tickSubRegions.try_emplace(key);
-			if (inserted) {
-				std::shared_ptr<const Chunk> ref = _chunkRef;
-				job->second = pool.submit_task([ref, xmin, xmax, ymin, ymax, zmin, zmax]() {
-					return ChunkSerializer::Serialize(*ref, xmin, xmax + 1, ymin, ymax + 1, zmin, zmax + 1);
-				}).share();
-			}
-			psr.data = job->second;
+
+		const SubRegionKey key{ _chunk, _chunkRef.get(), xmin, xmax, ymin, ymax, zmin, zmax };
+		auto [job, inserted] = tickSubRegions.try_emplace(key);
+		if (inserted) {
+			std::shared_ptr<const Chunk> ref = _chunkRef;
+			job->second = pool.submit_task([ref, xmin, xmax, ymin, ymax, zmin, zmax]() {
+				return std::make_shared<const std::vector<uint8_t>>(
+				    ChunkSerializer::Serialize(*ref, xmin, xmax + 1, ymin, ymax + 1, zmin, zmax + 1));
+			}).share();
 		}
+		psr.data = job->second;
 		subRegionFlight[&_session].push_back(std::move(psr));
 	}
 
@@ -302,9 +299,13 @@ struct ChunkSender {
 			size_t ready = 0;
 			while (ready < srQueue.size()) {
 				auto& psr = srQueue[ready];
-				if (!psr.data.valid() || psr.data.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+				if (!psr.data.valid()) {
+					++ready;
+					continue;
+				}
+				if (psr.data.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
 					break;
-				psr.header.compressedData = psr.data.get();
+				psr.header.sharedCompressedData = psr.data.get();
 				psr.header.Serialize(_session.stream);
 				++ready;
 			}
