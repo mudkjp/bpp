@@ -2069,6 +2069,48 @@ void TestLargeChestMirrorSync() {
 	CHECK(interaction.TickDiff().empty());
 }
 
+void TestDirtyChunkIndex() {
+	TempDir temp("dirty-index");
+	const auto regionDir = temp.path / "region";
+	std::filesystem::create_directories(regionDir);
+	RegionManager regions;
+	CHECK(regions.Initialize(regionDir.string()));
+
+	WorldManager world;
+	world.regionManager = &regions;
+	auto add = [&](Int32_2 _pos) {
+		auto chunk = std::make_shared<Chunk>();
+		chunk->cpos = _pos;
+		chunk->state.store(ChunkState::Generated);
+		chunk->SetBlockRaw({ 0, 0, 0 }, BLOCK_STONE);
+		world.chunks[_pos] = chunk;
+		world.AttachChunk(*chunk);
+		return chunk;
+	};
+	auto first = add({ 0, 0 });
+	auto second = add({ 1, 0 });
+	auto third = add({ 2, 0 });
+	CHECK_EQ(world.DirtyChunkCount(), size_t(0));
+
+	first->MarkModified();
+	CHECK_EQ(world.DirtyChunkCount(), size_t(1));
+	world.SaveChunks(false, false);
+	CHECK_EQ(world.DirtyChunkCount(), size_t(0));
+	CHECK(!first->isModified);
+	CHECK_EQ(regions.saveQueue.size(), size_t(1));
+
+	second->MarkModified();
+	third->SetBlock({ 0, 0, 0 }, BLOCK_DIRT);
+	CHECK_EQ(world.DirtyChunkCount(), size_t(2));
+	world.SaveChunks(false, false);
+	CHECK_EQ(world.DirtyChunkCount(), size_t(0));
+	CHECK_EQ(regions.saveQueue.size(), size_t(3));
+
+	regions.FlushAll();
+	CHECK(!std::filesystem::is_empty(regionDir));
+	regions.Release();
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -2319,6 +2361,7 @@ std::vector<TestCase> Tests() {
 		{ "inventory_tick_diff", TestInventoryTickDiff },
 		{ "large_chest_interaction", TestLargeChestInteraction },
 		{ "large_chest_mirror_sync", TestLargeChestMirrorSync },
+		{ "dirty_chunk_index", TestDirtyChunkIndex },
 		{ "container_mirror_sync", TestContainerMirrorSync },
 		{ "player_save_queue", TestPlayerSaveQueue },
 		{ "command_parsing", TestCommandParsing },
@@ -3047,6 +3090,18 @@ void RunBenchmarks() {
 	std::filesystem::create_directories(drainRegionDir);
 	RegionManager drainRegions;
 	drainRegions.Initialize(drainRegionDir.string());
+	WorldManager autosaveWorld;
+	for (int i = 0; i < 10000; ++i) {
+		auto chunk = std::make_shared<Chunk>();
+		chunk->cpos = { i % 100, i / 100 };
+		chunk->state.store(ChunkState::Generated);
+		autosaveWorld.chunks.emplace(chunk->cpos, std::move(chunk));
+	}
+	Bench("autosave_idle_10k", 0, [&] {
+		autosaveWorld.SaveChunks(false, false);
+		return autosaveWorld.DirtyChunkCount();
+	});
+
 	WorldManager drainWorld;
 	drainWorld.regionManager = &drainRegions;
 	for (int i = 0; i < 10000; ++i) {
