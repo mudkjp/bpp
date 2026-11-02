@@ -253,11 +253,25 @@ void Lighter::UnlightAt(int _x, int _y, int _z, LightType _type, WorldManager& _
 		    chunk->cpos);
 
 	unlightQueue.push_back({ { _x, _y, _z }, _type, oldVal });
+	ProcessUnlightQueue(_world, chunk);
+}
 
-	// Drain everything at once since there isn't a lot of unlighting events
-	while (!unlightQueue.empty()) {
-		auto [pos, t, val] = unlightQueue.back();
-		unlightQueue.pop_back();
+bool Lighter::ProcessUnlightQueue(WorldManager& _world, Chunk* _centerChunk) {
+	if (!HasPendingUnlight())
+		return false;
+
+	ChunkCache unlightCache;
+	if (_centerChunk) {
+		const auto& first = unlightQueue[unlightQueueHead];
+		unlightCache.Seed(_centerChunk, first.pos.x >> 4, first.pos.z >> 4, _world);
+	}
+
+	// Drain up to this tick's unlight budget. A large pool removal is split
+	// across ticks; FIFO order keeps older work from being starved.
+	while (unlightQueueHead < unlightQueue.size() && unlightWorkThisTick < unlightTickBudget) {
+		auto [pos, t, val] = unlightQueue[unlightQueueHead];
+		++unlightQueueHead;
+		++unlightWorkThisTick;
 
 		unlightCache.Refresh(pos.x >> 4, pos.z >> 4, _world);
 
@@ -315,6 +329,14 @@ void Lighter::UnlightAt(int _x, int _y, int _z, LightType _type, WorldManager& _
 			}
 		}
 	}
+
+	if (unlightQueueHead >= 4096 && unlightQueueHead * 2 >= unlightQueue.size()) {
+		unlightQueue.erase(unlightQueue.begin(),
+		                   unlightQueue.begin() + static_cast<std::ptrdiff_t>(unlightQueueHead));
+		unlightQueueHead = 0;
+	}
+
+	return HasPendingUnlight();
 }
 
 bool Lighter::ProcessLightQueue(WorldManager& _world, int _maxWork) {

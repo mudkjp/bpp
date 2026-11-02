@@ -415,6 +415,9 @@ void WorldManager::Tick(const std::vector<ClientPosition>& _players, bool _advan
 		Logger::Error << "No region manager while trying to Tick!\n";
 		return;
 	}
+	// Bound unlight BFS work; a large pool removal is spread over ticks.
+	static constexpr size_t UNLIGHT_TICK_WORK_BUDGET = 16384;
+	lightManager.BeginUnlightTick(UNLIGHT_TICK_WORK_BUDGET);
 	if (_advanceSimulation) {
 		auto environmentStart = _profiler ? Clock::now() : Clock::time_point{};
 		UpdateSkylightOffset();
@@ -469,7 +472,9 @@ void WorldManager::Tick(const std::vector<ClientPosition>& _players, bool _advan
 	// Remaining work carries over to the next tick; FIFO order in the lighter
 	// prevents old entries from being starved.
 	static constexpr int LIGHT_TICK_WORK_BUDGET = 16384;
-	lightManager.ProcessLightQueue(*this, LIGHT_TICK_WORK_BUDGET);
+	lightManager.ProcessUnlightQueue(*this);
+	if (!lightManager.HasPendingUnlight())
+		lightManager.ProcessLightQueue(*this, LIGHT_TICK_WORK_BUDGET);
 	auto unloadingStart = _profiler ? Clock::now() : Clock::time_point{};
 	UpdateLoadRadius(_players);
 	if (_profiler)
@@ -682,6 +687,10 @@ void WorldManager::Shutdown() {
 		Logger::Info << "Saving chunks for level 0\n";
 	}
 
+	// Shutdown drains everything; no deferral across ticks.
+	lightManager.BeginUnlightTick(SIZE_MAX);
+	lightManager.ProcessUnlightQueue(*this);
+
 	// Make sure lighting is up to date
 	lightManager.ProcessLightQueue(*this);
 
@@ -716,6 +725,7 @@ void WorldManager::Shutdown() {
 		FlushBleedWrites();
 
 		// Make sure lighting is up to date
+		lightManager.ProcessUnlightQueue(*this);
 		lightManager.ProcessLightQueue(*this);
 
 		// Save it

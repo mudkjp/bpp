@@ -96,6 +96,26 @@ public:
 	void UnlightAt(int _x, int _y, int _z, LightType _type, WorldManager& _world,
 	               Chunk* _centerChunk = nullptr);
 
+	// Per-tick cell budget for unlight BFS work. Call once per tick before any
+	// edits; UnlightAt leaves the remainder queued for the next call.
+	void BeginUnlightTick(size_t _budget) {
+		unlightTickBudget = _budget;
+		unlightWorkThisTick = 0;
+	}
+	// Drains queued unlight work up to the current tick budget.
+	bool ProcessUnlightQueue(WorldManager& _world, Chunk* _centerChunk = nullptr);
+	bool HasPendingUnlight() const {
+		return unlightQueue.size() > unlightQueueHead;
+	}
+	size_t PendingUnlightUpdates() const {
+		return unlightQueue.size() - unlightQueueHead;
+	}
+	// Test/benchmark reset only: drops deferred unlight work.
+	void DiscardUnlightQueue() {
+		unlightQueue.clear();
+		unlightQueueHead = 0;
+	}
+
 	// Process at most `_maxWork` voxels of queued light updates this call.
 	// INT_MAX drains the whole queue (startup/shutdown). Entries are served
 	// FIFO so a budget cannot starve older work behind BFS fan-out.
@@ -141,6 +161,9 @@ private:
 	// from starving older entries; the prefix is compacted periodically.
 	size_t lightQueueHead = 0;
 	std::vector<UnlightUpdate> unlightQueue;
+	size_t unlightQueueHead = 0;
+	size_t unlightTickBudget = SIZE_MAX;
+	size_t unlightWorkThisTick = 0;
 	int processingDepth = 0;
 };
 
