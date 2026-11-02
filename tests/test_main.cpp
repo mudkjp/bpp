@@ -1522,6 +1522,44 @@ void TestInventoryTickDiff() {
 	CHECK_EQ(interaction.diffScratch.capacity(), capacity);
 }
 
+void TestPlayerSaveQueue() {
+	TempDir temp("player-save-queue");
+	std::filesystem::create_directories(temp.path / "players");
+	SaveManager saves;
+	saves.SetSaveDirectory(temp.path.string());
+
+	// Repeated saves for one player coalesce to a single pending payload.
+	for (int i = 0; i < 100; ++i) {
+		Tag data = saves.GetNewPlayerNbt();
+		data.compound["Health"].shortValue = int16_t(i);
+		saves.QueuePlayerNbtSave("Alice", std::move(data));
+	}
+	CHECK_EQ(saves.PendingPlayerSaves(), size_t(1));
+	saves.PumpPlayerSaves();
+	CHECK_EQ(saves.PendingPlayerSaves(), size_t(1)); // no worker yet
+	saves.FlushPlayerSaves();
+	CHECK_EQ(saves.PlayerSaveWriteCount(), uint64_t(1));
+	CHECK_EQ(saves.PendingPlayerSaves(), size_t(0));
+
+	auto loaded = saves.GetPlayerNbt("Alice");
+	CHECK_EQ(int(loaded.Get("Health").GetShort()), 99);
+	CHECK(std::filesystem::exists(temp.path / "players" / "Alice.dat"));
+
+	// The worker path also processes one coalesced batch per pump.
+	saves.StartPlayerSaveWorker();
+	for (int i = 0; i < 100; ++i) {
+		Tag data = saves.GetNewPlayerNbt();
+		data.compound["Health"].shortValue = int16_t(200 + i);
+		saves.QueuePlayerNbtSave("Bob", std::move(data));
+	}
+	saves.PumpPlayerSaves();
+	saves.FlushPlayerSaves();
+	CHECK_EQ(saves.PlayerSaveWriteCount(), uint64_t(2));
+
+	auto bob = saves.GetPlayerNbt("Bob");
+	CHECK_EQ(int(bob.Get("Health").GetShort()), 299);
+}
+
 void TestConfigFixture() {
 	TempDir temp("config");
 	const auto target = temp.path / "server.properties";
@@ -1760,6 +1798,7 @@ std::vector<TestCase> Tests() {
 		{ "region_manager_save_queue", TestRegionManagerSaveQueue },
 		{ "recipe_mirror", TestRecipeMirror },
 		{ "inventory_tick_diff", TestInventoryTickDiff },
+		{ "player_save_queue", TestPlayerSaveQueue },
 		{ "command_parsing", TestCommandParsing },
 		{ "config_fixture", TestConfigFixture },
 		{ "string16_into_reuse", TestString16IntoReuse },
@@ -1935,6 +1974,21 @@ void RunBenchmarks() {
 		for (auto& slot : diffInventory.slots)
 			slot = fill ? ItemStack{ ItemId(5), 1, 0 } : ItemStack{};
 		return diffInteraction.TickDiff().size();
+	});
+
+	TempDir saveBenchTemp("player-save-bench");
+	std::filesystem::create_directories(saveBenchTemp.path / "players");
+	SaveManager saveBench;
+	saveBench.SetSaveDirectory(saveBenchTemp.path.string());
+	Bench("player_save_sync", 0, [&] {
+		Tag data = saveBench.GetNewPlayerNbt();
+		saveBench.SavePlayerNbt("Bench", data);
+		return size_t(1);
+	});
+	Bench("player_save_queue", 0, [&] {
+		Tag data = saveBench.GetNewPlayerNbt();
+		saveBench.QueuePlayerNbtSave("Bench", std::move(data));
+		return saveBench.PendingPlayerSaves();
 	});
 
 	EntityTracker benchTracker;
