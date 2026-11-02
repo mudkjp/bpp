@@ -390,6 +390,10 @@ public:
 		lastChunkSlot = nullptr;
 	}
 
+	void InvalidateChunkInterest() {
+		chunkInterestCacheValid = false;
+	}
+
 	Chunk* GetChunkRaw(Int32_2 _pos) {
 		auto* slot = FindChunkSlot(_pos);
 		return slot ? slot->get() : nullptr;

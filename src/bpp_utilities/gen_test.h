@@ -99,6 +99,7 @@ public:
 	    : world(_world), savedRegions(_world.regionManager), savedSeed(_world.seed),
 	      savedChunks(std::move(_world.chunks)) {
 		world.chunks.clear(); // A moved-from map is only guaranteed to be valid, not empty
+		world.InvalidateChunkInterest();
 		world.InvalidateChunkCache();
 		world.regionManager = &_emptyRegions;
 	}
@@ -109,6 +110,7 @@ public:
 		world.chunks = std::move(savedChunks);
 		world.regionManager = savedRegions;
 		world.InitWorldSeed(savedSeed); // Also restores the shared biome generator
+		world.InvalidateChunkInterest();
 		world.InvalidateChunkCache();
 	}
 
@@ -186,6 +188,7 @@ inline std::optional<double> GenerateFinishedWorld(WorldManager& _world, int _ra
 inline void DeleteAllChunks(WorldManager& _world) {
 	_world.pool.wait();
 	_world.chunks.clear();
+	_world.InvalidateChunkInterest();
 	_world.InvalidateChunkCache();
 }
 

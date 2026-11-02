@@ -1430,7 +1430,7 @@ void WorldManager::InitSpawn() {
 	}
 	this->spawnPoint = { sx, 64, sz };
 	chunks.clear(); // Clear all chunks so we can start fresh from the spawn area
-	chunkInterestCacheValid = false;
+	InvalidateChunkInterest();
 	InvalidateChunkCache();
 }
 
